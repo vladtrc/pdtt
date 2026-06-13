@@ -3,3 +3,4 @@ frames/
 *.tmp
 examples/*/res/
 examples/*/ref/
+__pycache__/

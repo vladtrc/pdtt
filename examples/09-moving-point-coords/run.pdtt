@@ -17,18 +17,14 @@ tex coords:
   at: below(p, 0.2)
   opacity: 0
 
-| 1s
-| linear | np.draw -> 1
+| 1s | linear | np.draw -> 1
 
-| 1s
-| p.opacity -> 1
+| 1s | p.opacity -> 1
 
 | 0.5s
 
-| 1s
-| coords.opacity -> 1
+| 1s | coords.opacity -> 1
 
 | 1s
 
-| 10s linear
-| theta -> math.tau
+| 10s | linear | theta -> math.tau

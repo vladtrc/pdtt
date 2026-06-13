@@ -579,10 +579,7 @@ func applyMods(mods []RowMod, blockDur float64, prevEnd float64, defEase string)
 }
 
 func (rt *Runtime) expandBlock(b BlockStmt, start float64) (float64, error) {
-	defEase := b.Ease
-	if defEase == "" {
-		defEase = "smooth"
-	}
+	defEase := "smooth"
 
 	if b.Each != "" {
 		grp, ok := rt.Groups[b.Each]
@@ -601,22 +598,30 @@ func (rt *Runtime) expandBlock(b BlockStmt, start float64) (float64, error) {
 			}
 			binds[name] = itv
 			iterStart := start + float64(k)*b.DurS
-			if err := rt.expandRows(b.Rows, iterStart, b.DurS, defEase, binds); err != nil {
+			if err := rt.expandRows(b.Rows, iterStart, b.DurS, defEase, b.DefMods, binds); err != nil {
 				return 0, err
 			}
 		}
 		return float64(len(grp.Items)) * b.DurS, nil
 	}
 
-	if err := rt.expandRows(b.Rows, start, b.DurS, defEase, nil); err != nil {
+	if err := rt.expandRows(b.Rows, start, b.DurS, defEase, b.DefMods, nil); err != nil {
 		return 0, err
 	}
 	return b.DurS, nil
 }
 
-func (rt *Runtime) expandRows(rows []Row, start, dur float64, defEase string, binds map[string]Value) error {
+func (rt *Runtime) expandRows(rows []Row, start, dur float64, defEase string, defMods []RowMod, binds map[string]Value) error {
 	prevEnd := 0.0
 	for _, row := range rows {
+		// header defaults come first so per-row modifiers override them; the
+		// merged row also feeds rowTransition (a default `morph`/`draw` applies).
+		if len(defMods) > 0 {
+			merged := make([]RowMod, 0, len(defMods)+len(row.Mods))
+			merged = append(merged, defMods...)
+			merged = append(merged, row.Mods...)
+			row.Mods = merged
+		}
 		w, err := applyMods(row.Mods, dur, prevEnd, defEase)
 		if err != nil {
 			return err

@@ -1,44 +1,26 @@
 # pdtt — the tween (`->`)
 
-## What it is
+`path -> expr` is the one operation in the language.
 
-`path -> expr` is the tween operator.
+- **During the window:** interpolate `path` from its current value toward `expr`.
+- **After the window:** `path` *is* `expr`. The previous value is forgotten.
 
-During the window: interpolates `path` from its current value to `expr`.
-After the window: `path` is `expr`. Done. The previous value is forgotten.
-
-## Both sides are just values
-
-The tween does not care what either side is.
-Static literal, dynamic expression, captured snapshot, field of another object — anything.
+Both sides are just values — literal, dynamic expression, captured snapshot, another
+record's field. The tween does not care which.
 
 ```
-| 2s smooth
-| dot.at -> [3, 1]              # after: dot.at is [3, 1], static
-| label.at -> center(dot)       # after: label.at follows center(dot)
-| frame.at -> home.at           # after: frame.at follows home.at
+| 1.5s | smooth
+| dot.at -> [3, 1]            # after: dot.at is [3, 1], fixed
+| label.at -> center(dot)     # after: label.at follows center(dot)
+| frame.at -> home.at         # after: the camera follows home.at
 ```
 
-If the target expression is dynamic, the field keeps updating after the window.
-If the target is a literal, the field stays fixed.
+If the target is dynamic, the field keeps tracking it after the window; if it's a
+literal, the field stays put. This subsumes bind / track / updater callbacks — there
+is no separate "follow" construct.
 
-## Ease
+Easing and the transition strategy (`morph`, `fade_in`, …) come from modifier cells
+before the `->`; default is linear, direct interpolation.
 
-The modifier cell before the tween sets the easing curve. Default: `linear`.
-
-## Transition strategy
-
-A transition modifier (`morph`, `fade_in`, `draw`, `write`) specifies how the
-interpolation is visually rendered. Without one, default is direct value interpolation.
-
-```
-| 1.5s
-| morph | title -> transform_title
-| fade_in | grid
-```
-
-## What the tween is not
-
-Not a binding declaration, not a detach operation, not a query about what the field
-"used to be". It is an assignment with an animated transition.
-After `x -> y`, x is y. Everything before that is irrelevant.
+`x -> y` is an assignment with an animated transition — not a binding, detach, or a
+query about the old value. After it, `x` is `y`.

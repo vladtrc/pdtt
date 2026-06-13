@@ -61,12 +61,12 @@ type Row struct {
 }
 
 type BlockStmt struct {
-	DurS float64
-	Ease string
-	Each string // record name for `each` headers
-	As   string
-	Rows []Row
-	Line int
+	DurS    float64
+	Each    string   // record name for `each` headers
+	As      string
+	DefMods []RowMod // header default modifiers, applied to every row in the block
+	Rows    []Row
+	Line    int
 }
 
 var (
@@ -251,9 +251,15 @@ func parseFieldLine(s string, ln int) (FieldDef, error) {
 	return fd, nil
 }
 
+// parseBlockHeader parses a block header line. The first `|`-cell carries the
+// clock (`4s` or `each record …`); every following `|`-cell is a default
+// modifier applied to all rows in the block (e.g. `| 4s | linear`). Per-row
+// modifiers override the defaults. The legacy `| 4s linear` whitespace form is
+// still accepted but the piped form is canonical.
 func parseBlockHeader(body string, ln int) (*BlockStmt, error) {
 	b := &BlockStmt{Line: ln}
-	fields := strings.Fields(body)
+	cells := splitCells(body)
+	fields := strings.Fields(cells[0])
 	if len(fields) == 0 {
 		return nil, fmt.Errorf("line %d: empty block header", ln)
 	}
@@ -279,45 +285,80 @@ func parseBlockHeader(body string, ln int) (*BlockStmt, error) {
 		if len(rest) > 1 {
 			return nil, fmt.Errorf("line %d: fast_after is not implemented in this prototype", ln)
 		}
-		return b, nil
-	}
-	d, _, err := parseDurToken(fields[0])
-	if err != nil {
-		return nil, fmt.Errorf("line %d: bad block duration %q", ln, fields[0])
-	}
-	b.DurS = d
-	if len(fields) > 1 {
-		if !easeNames[fields[1]] {
-			return nil, fmt.Errorf("line %d: unknown ease %q", ln, fields[1])
+	} else {
+		d, _, err := parseDurToken(fields[0])
+		if err != nil {
+			return nil, fmt.Errorf("line %d: bad block duration %q", ln, fields[0])
 		}
-		b.Ease = fields[1]
+		b.DurS = d
+		// legacy whitespace form `| 4s linear`: a trailing ease becomes a default.
+		for _, extra := range fields[1:] {
+			if !easeNames[extra] {
+				return nil, fmt.Errorf("line %d: trailing token %q in block header — put modifiers in their own `|` cell (`| %s | %s`)", ln, extra, fields[0], extra)
+			}
+			b.DefMods = append(b.DefMods, RowMod{Kind: "ease", Name: extra})
+		}
 	}
-	if len(fields) > 2 {
-		return nil, fmt.Errorf("line %d: trailing tokens in block header", ln)
+	// Remaining cells: default modifiers, plus an optional inline first row
+	// (a cell carrying the tween `->`). Same classification as any `|` line.
+	defMods, op, err := parseCells(cells[1:], ln)
+	if err != nil {
+		return nil, err
+	}
+	b.DefMods = append(b.DefMods, defMods...)
+	if op != nil {
+		b.Rows = append(b.Rows, Row{Line: ln, Op: *op})
 	}
 	return b, nil
 }
 
-func parseRow(body string, ln int) (Row, error) {
-	row := Row{Line: ln}
+// splitCells splits a `|`-delimited line body into trimmed cells.
+func splitCells(body string) []string {
 	cells := strings.Split(body, "|")
 	for i := range cells {
 		cells[i] = strings.TrimSpace(cells[i])
 	}
-	opCell := cells[len(cells)-1]
-	for _, c := range cells[:len(cells)-1] {
+	return cells
+}
+
+// parseCells classifies a list of `|`-cells into leading modifiers and an
+// optional trailing edit. A cell containing the tween `->` is the edit and
+// must be the last cell on the line; every other cell is a modifier. This is
+// the one rule shared by block headers and rows.
+func parseCells(cells []string, ln int) ([]RowMod, *RowOp, error) {
+	var mods []RowMod
+	for i, c := range cells {
+		if c == "" {
+			return nil, nil, fmt.Errorf("line %d: empty cell", ln)
+		}
+		if strings.Contains(c, "->") {
+			if i != len(cells)-1 {
+				return nil, nil, fmt.Errorf("line %d: the `->` edit must be the last cell on the line", ln)
+			}
+			op, err := parseOpCell(c, ln)
+			if err != nil {
+				return nil, nil, err
+			}
+			return mods, &op, nil
+		}
 		mod, err := parseModCell(c, ln)
 		if err != nil {
-			return row, err
+			return nil, nil, err
 		}
-		row.Mods = append(row.Mods, mod)
+		mods = append(mods, mod)
 	}
-	op, err := parseOpCell(opCell, ln)
+	return mods, nil, nil
+}
+
+func parseRow(body string, ln int) (Row, error) {
+	mods, op, err := parseCells(splitCells(body), ln)
 	if err != nil {
-		return row, err
+		return Row{}, err
 	}
-	row.Op = op
-	return row, nil
+	if op == nil {
+		return Row{}, fmt.Errorf("line %d: row has no `->` edit", ln)
+	}
+	return Row{Mods: mods, Op: *op, Line: ln}, nil
 }
 
 func parseWinBound(s string) (v float64, sec bool, ok bool) {

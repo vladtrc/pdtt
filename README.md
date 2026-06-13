@@ -14,16 +14,29 @@ or:
 make build
 ```
 
-## Run an example
+## Render examples
 
 ```bash
-make render EXAMPLE=40-shape-morph
+make                              # build, then render EVERY example in parallel
+make render EXAMPLE=40-shape-morph  # render a single example
 ```
 
 Outputs are written to `examples/<name>/res/`:
 
-- `f00000.png`, ...
+- `frames/f00000.png`, ...
 - `result.mp4` (when `ffmpeg` is installed)
+
+## Render the manim references
+
+```bash
+make ref                          # render every ref.py in parallel
+```
+
+Reference scenes (`examples/<name>/ref.py`) are rendered through `uv`
+(`uv run --with manim`), so no global manim install is needed — just `uv`.
+The reference video lands at `examples/<name>/ref/result.mp4`, mirroring `res/`.
+This is best-effort: if `uv` is missing or a scene needs LaTeX that isn't
+installed, it warns and skips without failing the build.
 
 ## CLI
 

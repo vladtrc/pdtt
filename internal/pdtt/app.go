@@ -55,7 +55,8 @@ func (r *FrameRenderer) Render(rt *Runtime, cfg Config) (*RenderResult, error) {
 	if err := initFonts(); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(cfg.OutputDir, 0o755); err != nil {
+	framesDir := filepath.Join(cfg.OutputDir, "frames")
+	if err := os.MkdirAll(framesDir, 0o755); err != nil {
 		return nil, err
 	}
 
@@ -70,15 +71,15 @@ func (r *FrameRenderer) Render(rt *Runtime, cfg Config) (*RenderResult, error) {
 			return nil, fmt.Errorf("t=%.2fs: %w", t, err)
 		}
 		dc := renderer.Frame(rt)
-		path := filepath.Join(cfg.OutputDir, fmt.Sprintf("f%05d.png", k))
+		path := filepath.Join(framesDir, fmt.Sprintf("f%05d.png", k))
 		if err := dc.SavePNG(path); err != nil {
 			return nil, err
 		}
 	}
 
 	return &RenderResult{
-		FramesDir: cfg.OutputDir,
-		FrameGlob: filepath.Join(cfg.OutputDir, "f%05d.png"),
+		FramesDir: framesDir,
+		FrameGlob: filepath.Join(framesDir, "f%05d.png"),
 		FrameCnt:  nFrames,
 	}, nil
 }
@@ -101,7 +102,7 @@ func (e *MP4Encoder) Encode(cfg Config) error {
 		ffmpegPath,
 		"-y",
 		"-framerate", fmt.Sprintf("%.4f", cfg.FPS),
-		"-i", filepath.Join(cfg.OutputDir, "f%05d.png"),
+		"-i", filepath.Join(cfg.OutputDir, "frames", "f%05d.png"),
 		"-pix_fmt", "yuv420p",
 		"-movflags", "+faststart",
 		outPath,

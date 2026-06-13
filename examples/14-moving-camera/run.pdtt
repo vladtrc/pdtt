@@ -11,20 +11,19 @@ square sq:
 
 home = frame
 
-| 2s smooth
+| 2s | smooth
 | frame.w -> nabla.w * 1.2
 | frame.at -> nabla.at
 
 | 1s
 
-| 1.5s smooth
+| 1.5s | smooth
 | frame -> home
 
-| 2s smooth
+| 2s | smooth
 | frame.h -> sq.w * 1.2
 | frame.at -> sq.at
 
 | 1s
 
-| 1.5s smooth
-| frame -> home
+| 1.5s | smooth | frame -> home
