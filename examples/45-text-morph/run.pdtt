@@ -1,0 +1,24 @@
+scene text_morph
+
+# A real typst math formula (rendered NATIVELY via typst, no LaTeX) morphs into
+# another formula and then into the shape it describes: the circle equation
+#   x^2 + y^2  ->  r^2  ->  ●
+typst("x^2 + y^2") a:
+  at: [0, 0]
+  scale: 1.4
+  color: color.white
+
+typst("r^2") b:
+  at: [0, 0]
+  scale: 1.4
+  color: color.white
+
+dot c:
+  at: [0, 0]
+  radius: 1.2
+  stroke: color.white
+  fill: color.pink @ 50%
+
+| 1s | a{opacity: 0} -> a     # a fades in (self-transition)
+| 1s | morph | a -> b
+| 1s | morph | b -> c

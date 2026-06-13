@@ -14,8 +14,10 @@ import (
 
 type Stmt interface{}
 
-type SceneStmt struct{ Name string }
-type ExternStmt struct{ Name string }
+type (
+	SceneStmt  struct{ Name string }
+	ExternStmt struct{ Name string }
+)
 
 type CaptureStmt struct {
 	Name string
@@ -61,12 +63,12 @@ type Row struct {
 }
 
 type BlockStmt struct {
-	DurS  float64
-	Ease  string
-	Each  string // record name for `each` headers
-	As    string
-	Rows  []Row
-	Line  int
+	DurS float64
+	Ease string
+	Each string // record name for `each` headers
+	As   string
+	Rows []Row
+	Line int
 }
 
 var (

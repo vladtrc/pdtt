@@ -69,11 +69,14 @@ func (r *Renderer) Frame(rt *Runtime) *gg.Context {
 		if e.Type == "data" || e.Type == "frame" {
 			continue
 		}
+		if !e.Active {
+			continue
+		}
 		tf := e.transform()
 		if tf.Opacity <= 0.001 {
 			continue
 		}
-		if e.MorphPath != nil {
+		if e.MorphContours != nil {
 			r.drawMorphPath(dc, c, e, tf)
 			continue
 		}
@@ -82,7 +85,7 @@ func (r *Renderer) Frame(rt *Runtime) *gg.Context {
 			r.drawRect(dc, c, e, tf)
 		case "dot":
 			r.drawDot(dc, c, e, tf)
-		case "tex", "text", "decimal":
+		case "tex", "typst", "text", "decimal":
 			r.drawText(dc, c, e, tf)
 		case "plane":
 			r.drawPlane(dc, c, e, tf)
@@ -113,6 +116,11 @@ func fieldColor(e *Entity, name string, fallback Color) Color {
 func outlinePoints(e *Entity, n int) []Vec {
 	if n <= 0 {
 		return nil
+	}
+	if isTextType(e.Type) {
+		if pts := sampleContoursByLength(textOutlineContours(e), n); len(pts) == n {
+			return pts
+		}
 	}
 	tf := e.transform()
 	at, angle := tf.At, tf.Angle
@@ -151,40 +159,268 @@ func outlinePoints(e *Entity, n int) []Vec {
 	return pts
 }
 
+type contourEdge struct {
+	a, b Vec
+	len  float64
+}
+
+func sampleContoursByLength(contours [][]Vec, n int) []Vec {
+	if n <= 0 {
+		return nil
+	}
+	var edges []contourEdge
+	total := 0.0
+	for _, contour := range contours {
+		if len(contour) < 2 {
+			continue
+		}
+		for i := range contour {
+			a := contour[i]
+			b := contour[(i+1)%len(contour)]
+			l := math.Hypot(b[0]-a[0], b[1]-a[1])
+			if l <= 1e-9 {
+				continue
+			}
+			edges = append(edges, contourEdge{a: a, b: b, len: l})
+			total += l
+		}
+	}
+	if len(edges) == 0 || total <= 1e-9 {
+		return nil
+	}
+
+	out := make([]Vec, n)
+	edgeIdx := 0
+	acc := 0.0
+	for i := 0; i < n; i++ {
+		target := total * float64(i) / float64(n)
+		for edgeIdx < len(edges)-1 && acc+edges[edgeIdx].len < target {
+			acc += edges[edgeIdx].len
+			edgeIdx++
+		}
+		ed := edges[edgeIdx]
+		u := 0.0
+		if ed.len > 1e-9 {
+			u = (target - acc) / ed.len
+		}
+		out[i] = Vec{
+			lerp(ed.a[0], ed.b[0], u),
+			lerp(ed.a[1], ed.b[1], u),
+			lerp(ed.a[2], ed.b[2], u),
+		}
+	}
+	return out
+}
+
+// morphContours returns an entity's closed outline contours in world space,
+// keeping glyphs and their counters (holes) as SEPARATE contours. Shapes are a
+// single analytic ring.
+func morphContours(e *Entity) [][]Vec {
+	if isTextType(e.Type) {
+		var out [][]Vec
+		for _, ct := range textOutlineContours(e) {
+			if len(ct) >= 2 {
+				out = append(out, ct)
+			}
+		}
+		return out
+	}
+	if pts := outlinePoints(e, 192); len(pts) >= 2 {
+		return [][]Vec{pts}
+	}
+	return nil
+}
+
+// resampleClosed re-parameterises a closed contour to exactly n points spaced by
+// cumulative arc length, so two contours can be lerped point-for-point.
+func resampleClosed(contour []Vec, n int) []Vec {
+	out := make([]Vec, n)
+	if n <= 0 || len(contour) == 0 {
+		return out
+	}
+	type seg struct {
+		a, b Vec
+		l    float64
+	}
+	var segs []seg
+	total := 0.0
+	for i := range contour {
+		a := contour[i]
+		b := contour[(i+1)%len(contour)]
+		l := math.Hypot(b[0]-a[0], b[1]-a[1])
+		if l <= 1e-12 {
+			continue
+		}
+		segs = append(segs, seg{a, b, l})
+		total += l
+	}
+	if len(segs) == 0 || total <= 1e-12 {
+		for i := range out {
+			out[i] = contour[0]
+		}
+		return out
+	}
+	idx, acc := 0, 0.0
+	for i := 0; i < n; i++ {
+		target := total * float64(i) / float64(n)
+		for idx < len(segs)-1 && acc+segs[idx].l < target {
+			acc += segs[idx].l
+			idx++
+		}
+		s := segs[idx]
+		u := (target - acc) / s.l
+		out[i] = Vec{lerp(s.a[0], s.b[0], u), lerp(s.a[1], s.b[1], u), lerp(s.a[2], s.b[2], u)}
+	}
+	return out
+}
+
+func contourCentroid(c []Vec) Vec {
+	if len(c) == 0 {
+		return Vec{}
+	}
+	var s Vec
+	for _, p := range c {
+		s = Vec{s[0] + p[0], s[1] + p[1], s[2] + p[2]}
+	}
+	nf := float64(len(c))
+	return Vec{s[0] / nf, s[1] / nf, s[2] / nf}
+}
+
+func contourSignedArea(c []Vec) float64 {
+	a := 0.0
+	for i := range c {
+		p, q := c[i], c[(i+1)%len(c)]
+		a += p[0]*q[1] - q[0]*p[1]
+	}
+	return a / 2
+}
+
+func pointContour(at Vec, n int) []Vec {
+	out := make([]Vec, n)
+	for i := range out {
+		out[i] = at
+	}
+	return out
+}
+
+// alignContour reorients/rotates d (already same length as s) to minimise
+// twisting against s: match winding, then start at the vertex nearest s[0].
+func alignContour(s, d []Vec) []Vec {
+	if len(s) != len(d) || len(d) == 0 {
+		return d
+	}
+	if contourSignedArea(s)*contourSignedArea(d) < 0 {
+		r := make([]Vec, len(d))
+		for i := range d {
+			r[i] = d[len(d)-1-i]
+		}
+		d = r
+	}
+	best, bestDist := 0, math.MaxFloat64
+	for k := range d {
+		dx, dy := d[k][0]-s[0][0], d[k][1]-s[0][1]
+		if dd := dx*dx + dy*dy; dd < bestDist {
+			bestDist, best = dd, k
+		}
+	}
+	if best == 0 {
+		return d
+	}
+	out := make([]Vec, len(d))
+	for i := range d {
+		out[i] = d[(i+best)%len(d)]
+	}
+	return out
+}
+
+// buildMorphPairs returns two contour lists of equal shape: matched glyph/hole
+// contours are paired by nearest centroid; a glyph with no partner is paired
+// with a degenerate point at its own centroid, so unmatched source glyphs shrink
+// away in place and unmatched destination glyphs grow from a point in place.
+func buildMorphPairs(src, dst [][]Vec, n int) (sOut, dOut [][]Vec) {
+	S := make([][]Vec, len(src))
+	for i, c := range src {
+		S[i] = resampleClosed(c, n)
+	}
+	D := make([][]Vec, len(dst))
+	for i, c := range dst {
+		D[i] = resampleClosed(c, n)
+	}
+	usedD := make([]bool, len(D))
+	for i := range S {
+		ci := contourCentroid(S[i])
+		best, bestDist := -1, math.MaxFloat64
+		for j := range D {
+			if usedD[j] {
+				continue
+			}
+			cj := contourCentroid(D[j])
+			dx, dy := ci[0]-cj[0], ci[1]-cj[1]
+			if dd := dx*dx + dy*dy; dd < bestDist {
+				bestDist, best = dd, j
+			}
+		}
+		sOut = append(sOut, S[i])
+		if best >= 0 {
+			usedD[best] = true
+			dOut = append(dOut, alignContour(S[i], D[best]))
+		} else {
+			dOut = append(dOut, pointContour(contourCentroid(S[i]), n))
+		}
+	}
+	for j := range D {
+		if usedD[j] {
+			continue
+		}
+		sOut = append(sOut, pointContour(contourCentroid(D[j]), n))
+		dOut = append(dOut, D[j])
+	}
+	return sOut, dOut
+}
+
 func (r *Renderer) drawMorphPath(dc *gg.Context, c cam, e *Entity, tf Transform) {
-	if len(e.MorphPath) == 0 {
+	if len(e.MorphContours) == 0 {
 		return
 	}
 	op := tf.Opacity
+	// Trace every contour as its own subpath so glyph counters (the holes in
+	// `x`, `r`, the digit `2`) and separate glyphs stay distinct — drawn with
+	// even-odd fill exactly like static text, instead of one flattened ring.
 	trace := func() {
-		for i, p := range e.MorphPath {
-			x, y := c.sx(p)
-			if i == 0 {
-				dc.MoveTo(x, y)
-			} else {
-				dc.LineTo(x, y)
+		for _, contour := range e.MorphContours {
+			for i, p := range contour {
+				x, y := c.sx(p)
+				if i == 0 {
+					dc.MoveTo(x, y)
+				} else {
+					dc.LineTo(x, y)
+				}
 			}
+			dc.ClosePath()
 		}
-		dc.ClosePath()
 	}
-	if e.MorphHasFill {
-		setColor(dc, e.MorphFill, op)
+	fill := func(col Color) {
+		dc.SetFillRuleEvenOdd()
+		setColor(dc, col, op)
 		trace()
 		dc.Fill()
+		dc.SetFillRuleWinding()
+	}
+	if e.MorphHasFill {
+		fill(e.MorphFill)
 	} else if f, ok := e.Fields["fill"]; ok && f.Val != nil {
 		if col, err := asColor(f.Val); err == nil {
-			setColor(dc, col, op)
-			trace()
-			dc.Fill()
+			fill(col)
 		}
 	}
-	stroke := fieldColor(e, "stroke", entityColor(e))
-	if e.MorphHasStroke {
-		stroke = e.MorphStroke
-	}
-	if stroke.A > 0.001 {
-		setColor(dc, stroke, op)
-		dc.SetLineWidth(math.Max(1.5, 0.045*c.ppu))
+	// Stroke is fully driven by the interpolated morph style (color + width),
+	// exactly like manim lerps stroke_rgba and stroke_width. There is no
+	// fallback to the entity's fill colour: a text glyph has stroke width 0 and
+	// must stay fill-only, otherwise the outline thickens it (the frame-29→30
+	// "bolding"). A width of 0 simply draws nothing.
+	if e.MorphHasStroke && e.MorphStrokeW > 1e-6 && e.MorphStroke.A > 0.001 {
+		setColor(dc, e.MorphStroke, op)
+		dc.SetLineWidth(math.Max(1.0, e.MorphStrokeW*c.ppu))
 		trace()
 		dc.Stroke()
 	}
@@ -293,8 +529,10 @@ func (r *Renderer) drawText(dc *gg.Context, c cam, e *Entity, tf Transform) {
 	if emPx < 1 {
 		return
 	}
-	dc.SetFontFace(faceAt(emPx * refPx / 48.0)) // em world ≈ 48pt at ref scale
 	baseCol := entityColor(e)
+	if !typstInstalled() {
+		dc.SetFontFace(faceAt(emPx * refPx / 48.0)) // em world ≈ 48pt at ref scale
+	}
 
 	budget := lay.TotalRunes
 	if e.Reveal < 1 {
@@ -306,8 +544,13 @@ func (r *Renderer) drawText(dc *gg.Context, c cam, e *Entity, tf Transform) {
 			if used >= budget {
 				return
 			}
+			partial := false
 			text := sg.Text
 			if used+sg.Runes > budget {
+				partial = true
+				if len(sg.Contours) > 0 {
+					return
+				}
 				runes := []rune(text)
 				text = string(runes[:budget-used])
 			}
@@ -327,8 +570,29 @@ func (r *Renderer) drawText(dc *gg.Context, c cam, e *Entity, tf Transform) {
 			}
 			wx := at[0] - line.W/2 + sg.X
 			wy := at[1] + line.Y
-			x, y := c.sx(Vec{wx, wy, 0})
 			setColor(dc, col, segOp)
+			if len(sg.Contours) > 0 && !partial {
+				dc.SetFillRuleEvenOdd()
+				for _, contour := range sg.Contours {
+					if len(contour) == 0 {
+						continue
+					}
+					for i, p := range contour {
+						wp := rotateAround(Vec{wx + p[0], wy + p[1], 0}, at, tf.Angle)
+						x, y := c.sx(wp)
+						if i == 0 {
+							dc.MoveTo(x, y)
+						} else {
+							dc.LineTo(x, y)
+						}
+					}
+					dc.ClosePath()
+				}
+				dc.Fill()
+				dc.SetFillRuleWinding()
+				continue
+			}
+			x, y := c.sx(Vec{wx, wy, 0})
 			dc.DrawString(text, x, y+0.35*emPx)
 		}
 	}

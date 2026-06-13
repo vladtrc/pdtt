@@ -25,7 +25,7 @@ Same `type name:` declared twice merges into one record (fields in declaration o
 ## Time: the `|` line
 
 Every `|` line is a list of `|`-separated **cells**. The last cell may be an **edit**
-(`path -> expr`); every cell before it is a **modifier** shaping that edit:
+(`path -> expr` or `obj{...} -> obj`); every cell before it is a **modifier** shaping that edit:
 
 ```
 | <mod> | <mod> | path -> expr
@@ -51,6 +51,22 @@ Rules:
 
 `path -> expr`: during the window, interpolate `path` toward `expr`; after, `path` **is** `expr`
 (dynamic targets keep tracking). See `tween.md`.
+
+## Edit — self-entry tween
+
+Records are declared inactive: they can be referenced by expressions, but they are not rendered
+until an entry or morph activates them.
+
+`obj{field: start, ...} -> obj` is a same-object transition. The left side is a phantom copy of
+`obj` with the listed field overrides; the right side is the declared object. Over the window,
+each overridden field tweens from the phantom value back to the declared value:
+
+```
+| 1s | s{draw: 0} -> s
+| 1s | label{opacity: 0} -> label
+```
+
+Because both sides are the same object, this is the special case that needs no `morph` modifier.
 
 ## Modifiers
 

@@ -3,28 +3,25 @@ scene moving_point_coords
 theta = 0
 
 plane np:
-  draw: 0
 
 dot p:
   at: [3 * cos(theta), 3 * sin(theta), 0]
   color: color.green
-  opacity: 0
 
 tex coords:
   text: fmt("({:.2f}, {:.2f})", p.at.x, p.at.y)
   scale: 0.8
   color: color.green
   at: below(p, 0.2)
-  opacity: 0
 
-| 1s | linear | np.draw -> 1
+| 1s | linear | np{draw: 0} -> np   # grid draws along its contour
 
-| 1s | p.opacity -> 1
+| 1s | p{opacity: 0} -> p           # the point fades in
 
 | 0.5s
 
-| 1s | coords.opacity -> 1
+| 1s | coords{opacity: 0} -> coords # the label fades in
 
 | 1s
 
-| 10s | linear | theta -> math.tau
+| 10s | linear | theta -> math.tau  # point orbits, coords follow

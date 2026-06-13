@@ -11,6 +11,11 @@ square sq:
 
 home = frame
 
+| 1s
+| sq{opacity: 0} -> sq
+| nabla{opacity: 0} -> nabla
+
+
 | 2s | smooth
 | frame.w -> nabla.w * 1.2
 | frame.at -> nabla.at

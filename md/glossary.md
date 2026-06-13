@@ -16,9 +16,18 @@ freezes it. `home = frame` snapshots the camera there.
 
 **clock** — the first cell of a block header: `4s`, a fraction (`0.3` / `30%`), or `each …`.
 
-**row / edit** — a `| … | path -> expr` line. The `path -> expr` is the edit; see **tween**.
+**row / edit** — a `| ... | path -> expr` or `| ... | obj{...} -> obj` line. The edit is the last cell.
 
 **tween (`->`)** — interpolate `path` toward `expr` over the window, then `path` *is* `expr`.
+
+**entry** — a same-object tween. `obj{field: start, ...} -> obj` creates a phantom
+copy of `obj` with the listed field overrides, activates `obj`, then tweens those fields back
+to the declared object. It is the special case of morphing an object into itself, so it needs
+no `morph` modifier or structural pairing.
+
+**presence** — records are declared inactive: they exist for references and layout, but render
+nothing until an entry or `morph` activates them. `opacity` stays a visual field, not the
+presence flag.
 
 **modifier** — any cell before the `->` on a line: a window, ease, transition, offset, or
 pairing. Modifiers shape the tween; they are not operations.

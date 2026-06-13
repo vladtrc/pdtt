@@ -14,8 +14,10 @@ import (
 
 type Stmt interface{}
 
-type SceneStmt struct{ Name string }
-type ExternStmt struct{ Name string }
+type (
+	SceneStmt  struct{ Name string }
+	ExternStmt struct{ Name string }
+)
 
 type CaptureStmt struct {
 	Name string
@@ -48,10 +50,21 @@ type RowMod struct {
 }
 
 type RowOp struct {
-	Kind       string // "arrow"
+	Kind       string // "arrow" | "enter"
 	LHS        Expr
 	RHS        Expr
 	Transition string // optional transition prefix in op cell
+
+	// enter: `obj{field: expr, …} -> obj` — a self-transition. Snap the named
+	// object to a phantom copy with these fields overridden, then tween every
+	// overridden field back to the object's declared value over the window.
+	EnterName string
+	Overrides []EnterField
+}
+
+type EnterField struct {
+	Name string
+	Val  Expr
 }
 
 type Row struct {
@@ -62,20 +75,22 @@ type Row struct {
 
 type BlockStmt struct {
 	DurS    float64
-	Each    string   // record name for `each` headers
+	Each    string // record name for `each` headers
 	As      string
 	DefMods []RowMod // header default modifiers, applied to every row in the block
 	Rows    []Row
 	Line    int
+	Inline  bool // true when the header line also carried the first row edit
 }
 
 var (
-	recordRe  = regexp.MustCompile(`^(\w+) (\w+):$`)
-	captureRe = regexp.MustCompile(`^(\w+)\s*=\s*(.+)$`)
-	durRe     = regexp.MustCompile(`^(\d*\.?\d+)(s|%)?$`)
-	winRe     = regexp.MustCompile(`^(\d*\.?\d+(?:%|s)?)?-(\d*\.?\d+(?:%|s)?)?$`)
-	foldRe    = regexp.MustCompile(`^scan\((.+) by (\w+)\)$`)
-	timeAmtRe = regexp.MustCompile(`^(\d*\.?\d+)(s?)$`)
+	recordRe     = regexp.MustCompile(`^(\w+) (\w+):$`)
+	ctorRecordRe = regexp.MustCompile(`^(\w+)\((.*)\)\s+(\w+):$`)
+	captureRe    = regexp.MustCompile(`^(\w+)\s*=\s*(.+)$`)
+	durRe        = regexp.MustCompile(`^(\d*\.?\d+)(s|%)?$`)
+	winRe        = regexp.MustCompile(`^(\d*\.?\d+(?:%|s)?)?-(\d*\.?\d+(?:%|s)?)?$`)
+	foldRe       = regexp.MustCompile(`^scan\((.+) by (\w+)\)$`)
+	timeAmtRe    = regexp.MustCompile(`^(\d*\.?\d+)(s?)$`)
 )
 
 var easeNames = map[string]bool{
@@ -167,6 +182,9 @@ func ParseFile(src string) ([]Stmt, error) {
 		if strings.HasPrefix(trimmed, "|") {
 			flushRecord()
 			body := strings.TrimSpace(trimmed[1:])
+			if curBlock != nil && curBlock.Inline && isInlineBlockHeader(body, curBlock) {
+				flushBlock()
+			}
 			if curBlock == nil {
 				b, err := parseBlockHeader(body, ln)
 				if err != nil {
@@ -197,6 +215,27 @@ func ParseFile(src string) ([]Stmt, error) {
 			}
 			stmts = append(stmts, ExternStmt{Name: name})
 		default:
+			if m := ctorRecordRe.FindStringSubmatch(trimmed); m != nil {
+				typ := m[1]
+				if typ != "text" && typ != "typst" {
+					return nil, fmt.Errorf("line %d: constructor-style records are only supported for text(...) and typst(...)", ln)
+				}
+				e, err := ParseExpr(m[2])
+				if err != nil {
+					return nil, fmt.Errorf("line %d: %v", ln, err)
+				}
+				curRecord = &RecordStmt{
+					Type: typ,
+					Name: m[3],
+					Fields: []FieldDef{{
+						Name: "text",
+						E:    e,
+						Line: ln,
+					}},
+					Line: ln,
+				}
+				continue
+			}
 			if m := recordRe.FindStringSubmatch(trimmed); m != nil {
 				curRecord = &RecordStmt{Type: m[1], Name: m[2], Line: ln}
 				continue
@@ -308,6 +347,7 @@ func parseBlockHeader(body string, ln int) (*BlockStmt, error) {
 	b.DefMods = append(b.DefMods, defMods...)
 	if op != nil {
 		b.Rows = append(b.Rows, Row{Line: ln, Op: *op})
+		b.Inline = true
 	}
 	return b, nil
 }
@@ -319,6 +359,45 @@ func splitCells(body string) []string {
 		cells[i] = strings.TrimSpace(cells[i])
 	}
 	return cells
+}
+
+func isInlineBlockHeader(body string, curBlock *BlockStmt) bool {
+	cells := splitCells(body)
+	if len(cells) < 2 {
+		return false
+	}
+	fields := strings.Fields(cells[0])
+	if len(fields) == 0 {
+		return false
+	}
+	if fields[0] != "each" {
+		if _, _, err := parseDurToken(fields[0]); err != nil {
+			return false
+		}
+	}
+	if !hasEditCell(cells[1:]) {
+		return false
+	}
+	for _, c := range cells[1 : len(cells)-1] {
+		if transitionNames[c] {
+			return true
+		}
+	}
+	for _, mod := range curBlock.DefMods {
+		if mod.Kind == "transition" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasEditCell(cells []string) bool {
+	for _, c := range cells {
+		if strings.Contains(c, "->") {
+			return true
+		}
+	}
+	return false
 }
 
 // parseCells classifies a list of `|`-cells into leading modifiers and an
@@ -443,13 +522,82 @@ func parseOpCell(c string, ln int) (RowOp, error) {
 	if i < 0 {
 		return RowOp{}, fmt.Errorf("line %d: op cell must contain `->`: %q", ln, c)
 	}
-	lhs, err := ParseExpr(strings.TrimSpace(c[:i]))
+	lhsText := strings.TrimSpace(c[:i])
+	rhsText := strings.TrimSpace(c[i+2:])
+	if rhsText == "gone" {
+		return RowOp{}, fmt.Errorf("line %d: `gone` is not supported; tween an explicit field such as opacity instead", ln)
+	}
+	if strings.Contains(lhsText, "{") || strings.Contains(lhsText, "}") {
+		name, overrides, err := parseUpdateExpr(lhsText, ln)
+		if err != nil {
+			return RowOp{}, err
+		}
+		if rhsText != name {
+			return RowOp{}, fmt.Errorf("line %d: object update tween is a self-transition; both sides must name the same object (`%s{...} -> %s`), got %q", ln, name, name, rhsText)
+		}
+		if len(overrides) == 0 {
+			return RowOp{}, fmt.Errorf("line %d: object update tween needs at least one overridden field, e.g. `%s{opacity: 0} -> %s`", ln, name, name)
+		}
+		return RowOp{Kind: "enter", EnterName: name, Overrides: overrides}, nil
+	}
+	lhs, err := ParseExpr(lhsText)
 	if err != nil {
 		return RowOp{}, fmt.Errorf("line %d: %v", ln, err)
 	}
-	rhs, err := ParseExpr(strings.TrimSpace(c[i+2:]))
+	rhs, err := ParseExpr(rhsText)
 	if err != nil {
 		return RowOp{}, fmt.Errorf("line %d: %v", ln, err)
 	}
 	return RowOp{Kind: "arrow", LHS: lhs, RHS: rhs, Transition: transition}, nil
+}
+
+// parseUpdateExpr parses an update expression `name{field: expr, …}`.
+func parseUpdateExpr(s string, ln int) (string, []EnterField, error) {
+	open := strings.IndexByte(s, '{')
+	if open < 0 || !strings.HasSuffix(s, "}") {
+		return "", nil, fmt.Errorf("line %d: object update tween left side must be `obj{field: expr, ...}`, got %q", ln, s)
+	}
+	name := strings.TrimSpace(s[:open])
+	if name == "" {
+		return "", nil, fmt.Errorf("line %d: object update tween left side has no object name: %q", ln, s)
+	}
+	var fields []EnterField
+	for _, part := range splitTopLevel(s[open+1 : len(s)-1]) {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		ci := strings.IndexByte(part, ':')
+		if ci < 0 {
+			return "", nil, fmt.Errorf("line %d: bad override %q (want `field: expr`)", ln, part)
+		}
+		key := strings.TrimSpace(part[:ci])
+		ex, err := ParseExpr(strings.TrimSpace(part[ci+1:]))
+		if err != nil {
+			return "", nil, fmt.Errorf("line %d: %v", ln, err)
+		}
+		fields = append(fields, EnterField{Name: key, Val: ex})
+	}
+	return name, fields, nil
+}
+
+// splitTopLevel splits on commas that are not nested inside (), [], or {}.
+func splitTopLevel(s string) []string {
+	var out []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		case ',':
+			if depth == 0 {
+				out = append(out, s[start:i])
+				start = i + 1
+			}
+		}
+	}
+	return append(out, s[start:])
 }

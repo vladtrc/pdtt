@@ -17,8 +17,8 @@ import (
 )
 
 var (
-	ttfFont  *truetype.Font
-	faceCache = map[int]font.Face{}
+	ttfFont     *truetype.Font
+	faceCache   = map[int]font.Face{}
 	measureFace font.Face
 )
 
@@ -105,8 +105,10 @@ type texSeg struct {
 	Text     string
 }
 
-var markupRe = regexp.MustCompile(`\{(\w+)\}(.*?)\{/\w+\}`)
-var mathSpanRe = regexp.MustCompile(`\$([^$]*)\$`)
+var (
+	markupRe   = regexp.MustCompile(`\{(\w+)\}(.*?)\{/\w+\}`)
+	mathSpanRe = regexp.MustCompile(`\$([^$]*)\$`)
+)
 
 func segmentText(raw string, partNames []string) []texSeg {
 	if locs := markupRe.FindAllStringSubmatchIndex(raw, -1); len(locs) > 0 {

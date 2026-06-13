@@ -14,6 +14,15 @@ or:
 make build
 ```
 
+## Format and lint
+
+```bash
+make fmt
+```
+
+`make fmt` runs `gofumpt`, `go vet`, and `golangci-lint` on `cmd` and `internal` packages.
+The external Go tools are executed with `go run`, so they do not need to be installed into `PATH`.
+
 ## Render examples
 
 ```bash
@@ -58,3 +67,6 @@ Flags:
 - Constants are lowercase and namespaced (`color.*`, `corner.*`, `approx.*`).
 - Math constants are provided under `math.*` (`math.pi`, `math.tau`).
 - Tween (`->`) keeps tracking dynamic RHS expressions after the tween window ends.
+- Records start inactive. Use `obj{field: start} -> obj` for same-object entry and `morph` to activate a target.
+- Text rendering uses `typst` (`typst compile -f svg - -`) for native glyph outlines; if `typst` is absent on `PATH`, pdtt falls back to legacy freetype text rendering.
+- Text records can be written as `text("plain") name:`; math/Typst records can be written as `typst("x^2 + y^2") name:`.

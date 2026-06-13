@@ -190,7 +190,7 @@ func NewRuntime() *Runtime {
 		Groups:  map[string]*Group{},
 		post:    map[string]*PostAssign{},
 	}
-	f := &Entity{Type: "frame", Name: "frame", Fields: map[string]*Field{}, Reveal: 1, rt: rt}
+	f := &Entity{Type: "frame", Name: "frame", Fields: map[string]*Field{}, Reveal: 1, Active: true, rt: rt}
 	f.field("at").Val = Vec{}
 	f.field("w").Val = frameW0
 	f.field("h").Val = frameH0
@@ -227,11 +227,9 @@ func evalTweenGoal(rt *Runtime, rhs Expr, binds map[string]Value, elemIdx, elemN
 	if list, ok := goal.([]Value); ok && elemIdx >= 0 && len(list) == elemN {
 		goal = list[elemIdx]
 	}
-	if cur != nil {
-		if _, isVec := cur.(Vec); isVec {
-			if g, err := asVec(goal); err == nil {
-				goal = g
-			}
+	if _, isVec := cur.(Vec); isVec {
+		if g, err := asVec(goal); err == nil {
+			goal = g
 		}
 	}
 	return goal, nil
@@ -725,6 +723,9 @@ func (rt *Runtime) expandRow(row Row, w winState, start, dur float64, binds map[
 		return &Anim{T0: t0, T1: t1, Ease: ease, Binds: merged, Line: row.Line}
 	}
 
+	if row.Op.Kind == "enter" {
+		return rt.expandEnter(row, w, mkAnim)
+	}
 	if row.Op.Kind != "arrow" {
 		return fmt.Errorf("line %d: unsupported row operation %q", row.Line, row.Op.Kind)
 	}
@@ -801,11 +802,12 @@ func (rt *Runtime) expandArrow(row Row, w winState, mk func(from, to float64, eb
 			return fmt.Errorf("line %d: %v", row.Line, err)
 		}
 		a := mk(w.from, w.to, nil)
-		if special == "record" {
+		switch special {
+		case "record":
 			rt.fillRecordArrow(a, lhs, rhs, binds)
-		} else if special == "warp" {
+		case "warp":
 			rt.fillWarpArrow(a, ref)
-		} else {
+		default:
 			fillTween(a, ref, rhs, -1, 0)
 		}
 		rt.Anims = append(rt.Anims, a)
@@ -856,6 +858,61 @@ func (rt *Runtime) expandArrow(row Row, w winState, mk func(from, to float64, eb
 		}
 		fillTween(a, ref, rhs, k, n)
 		rt.Anims = append(rt.Anims, a)
+	}
+	return nil
+}
+
+// litVal is an Expr that evaluates to a captured Value verbatim. It lets the
+// object update tween synthesise a goal expression for a field that has no
+// declaration (its goal is just the type default, e.g. draw/opacity = 1).
+type litVal struct{ V Value }
+
+// expandEnter compiles a self-transition `obj{field: ov, ...} -> obj`. For each
+// overridden field it snaps the field to the phantom value `ov` (so the object
+// reads as overridden before the window — e.g. invisible at opacity 0), then
+// tweens it back to the object's declared value over the window. Because both
+// sides are the same object there is no structural pairing: it is a plain
+// per-field tween, never a morph.
+func (rt *Runtime) expandEnter(row Row, w winState, mk func(from, to float64, eb map[string]Value) *Anim) error {
+	binds := mk(0, 0, nil).Binds
+	ents, _, err := rt.verbSubjects(Ident(row.Op.EnterName), binds)
+	if err != nil {
+		return fmt.Errorf("line %d: %v", row.Line, err)
+	}
+	s := &Scope{rt: rt, binds: binds}
+	for _, e := range ents {
+		for _, ov := range row.Op.Overrides {
+			f := e.field(ov.Name)
+			// Goal = the field's declared value: its own definition if it has
+			// one, else the type default already sitting in f.Val.
+			var goal Expr
+			if f.Def != nil {
+				goal = f.Def
+			} else {
+				goal = litVal{V: f.Val}
+			}
+			// Snap to the phantom value and freeze it so initFields and the
+			// live evaluator leave it alone until the window tweens it back.
+			pv, err := s.Eval(ov.Val)
+			if err != nil {
+				return fmt.Errorf("line %d: %v", row.Line, err)
+			}
+			f.Val = coerceField(f.Name, pv)
+			f.Def = nil
+			f.Live = false
+			f.Frozen = true
+			a := mk(w.from, w.to, nil)
+			fillTween(a, FieldRef{E: e, F: f}, goal, -1, 0)
+			prevStart := a.Start
+			a.Start = func(a *Anim, rt *Runtime) error {
+				e.Active = true
+				if prevStart != nil {
+					return prevStart(a, rt)
+				}
+				return nil
+			}
+			rt.Anims = append(rt.Anims, a)
+		}
 	}
 	return nil
 }
@@ -1048,11 +1105,8 @@ func (rt *Runtime) expandMorph(row Row, w winState, mk func(from, to float64, eb
 		var srcOpRef Ref
 		var srcPos func() Vec
 		var srcMove *Entity
-		var textMorph bool
-		var shapeMorph bool
-		var srcText, dstText *Field
-		var dstFontSize, dstScale float64
-		var srcPts, dstPts []Vec
+		var outlineMorph bool
+		var srcCtrs, dstCtrs [][]Vec
 		var srcShapeStyle, dstShapeStyle shapeMorphStyle
 		if srcP != nil {
 			srcOpRef = PartOpacityRef{P: srcP}
@@ -1085,27 +1139,40 @@ func (rt *Runtime) expandMorph(row Row, w winState, mk func(from, to float64, eb
 				return fmt.Errorf("line %d: morph target is %T", a.Line, dv)
 			}
 			dstOpRef = FieldRef{E: dst, F: dst.field("opacity")}
-			textMorph = srcMove != nil && isTextType(srcMove.Type) && isTextType(dst.Type)
-			shapeMorph = !textMorph && srcMove != nil && isShapeType(srcMove.Type) && isShapeType(dst.Type)
-			if textMorph {
-				srcText = srcMove.field("text")
-				dstText = dst.field("text")
-				dstFontSize = dst.fnum("font_size")
-				dstScale = dst.fnum("scale")
-				dstOpRef.Set(0.0)
+			if srcMove != nil {
+				srcMove.Active = true
 			}
-			if shapeMorph {
-				srcPts = outlinePoints(srcMove, 64)
-				dstPts = outlinePoints(dst, 64)
+			dstWasActive := dst.Active
+			dst.Active = true
+			// The morph now owns the source's visibility: cancel any held
+			// post-tween that was pinning the source opacity (e.g. a prior
+			// `src.opacity -> 1` fade-in), so the morph's fade-out at u>=1 sticks.
+			rt.clearPost(srcOpRef.Key())
+			outlineMorph = srcMove != nil && canOutline(srcMove.Type) && canOutline(dst.Type)
+			if outlineMorph {
+				sc := morphContours(srcMove)
+				dc := morphContours(dst)
+				if len(sc) == 0 || len(dc) == 0 {
+					outlineMorph = false
+				} else {
+					srcCtrs, dstCtrs = buildMorphPairs(sc, dc, 192)
+				}
+			}
+			if outlineMorph {
 				srcShapeStyle = shapeStyleForMorph(srcMove)
 				dstShapeStyle = shapeStyleForMorph(dst)
 				dstOpRef.Set(0.0)
 			}
-			start := []Value{srcOpRef.Get(), dstOpRef.Get()}
-			if !shapeMorph {
+			dstStartOpacity := dstOpRef.Get()
+			if !dstWasActive {
+				dstStartOpacity = 0.0
+				dstOpRef.Set(0.0)
+			}
+			start := []Value{srcOpRef.Get(), dstStartOpacity}
+			if !outlineMorph {
 				start = append(start, srcPos().Sub(dst.fvec("at")))
 			}
-			if srcMove != nil && !shapeMorph {
+			if srcMove != nil && !outlineMorph {
 				start = append(start, srcMove.Offset)
 			}
 			a.start = start
@@ -1113,48 +1180,40 @@ func (rt *Runtime) expandMorph(row Row, w winState, mk func(from, to float64, eb
 		}
 		a.Update = func(a *Anim, rt *Runtime, u float64) {
 			s0, _ := asFloat(a.start[0])
-			if textMorph && srcMove != nil && len(a.start) > 3 {
-				off, _ := asVec(a.start[2])
-				srcOff, _ := asVec(a.start[3])
-				srcOpRef.Set(s0)
-				dstOpRef.Set(0.0)
-				srcMove.Offset = srcOff.Sub(off.Mul(u))
-				if u >= 0.5 && srcText != nil && dstText != nil {
-					srcText.Val = dstText.Val
-					srcMove.field("font_size").Val = dstFontSize
-					srcMove.field("scale").Val = dstScale
-					srcMove.layoutCache = nil
-				}
-				if u >= 1 {
-					srcOpRef.Set(0.0)
-					dstOpRef.Set(1.0)
-					dst.Offset = Vec{}
-				}
-				return
-			}
-			if shapeMorph && srcMove != nil && len(srcPts) == len(dstPts) {
-				pts := make([]Vec, len(srcPts))
-				for i := range pts {
-					pts[i] = Vec{
-						lerp(srcPts[i][0], dstPts[i][0], u),
-						lerp(srcPts[i][1], dstPts[i][1], u),
-						lerp(srcPts[i][2], dstPts[i][2], u),
+			if outlineMorph && srcMove != nil && len(srcCtrs) == len(dstCtrs) && len(srcCtrs) > 0 {
+				ctrs := make([][]Vec, len(srcCtrs))
+				for ci := range srcCtrs {
+					sc, dc := srcCtrs[ci], dstCtrs[ci]
+					pc := make([]Vec, len(sc))
+					for i := range pc {
+						pc[i] = Vec{
+							lerp(sc[i][0], dc[i][0], u),
+							lerp(sc[i][1], dc[i][1], u),
+							lerp(sc[i][2], dc[i][2], u),
+						}
 					}
+					ctrs[ci] = pc
 				}
-				srcMove.MorphPath = pts
+				srcMove.MorphContours = ctrs
 				blend := Color{
 					R: lerp(srcShapeStyle.EffectiveColor.R, dstShapeStyle.EffectiveColor.R, u),
 					G: lerp(srcShapeStyle.EffectiveColor.G, dstShapeStyle.EffectiveColor.G, u),
 					B: lerp(srcShapeStyle.EffectiveColor.B, dstShapeStyle.EffectiveColor.B, u),
 					A: 1,
 				}
-				srcMove.MorphHasStroke = true
 				srcMove.MorphStroke = Color{
 					R: blend.R,
 					G: blend.G,
 					B: blend.B,
 					A: lerp(srcShapeStyle.StrokeA, dstShapeStyle.StrokeA, u),
 				}
+				// Native stroke handling (manim interpolate_color lerps
+				// stroke_width): the outline width itself grows from the source
+				// to the target. Text endpoints have width 0, so text→text never
+				// strokes and text→shape grows the outline in smoothly — no more
+				// faking a stroke from the fill colour, which bolded the glyphs.
+				srcMove.MorphStrokeW = lerp(srcShapeStyle.StrokeW, dstShapeStyle.StrokeW, u)
+				srcMove.MorphHasStroke = srcMove.MorphStrokeW > 1e-6 && srcMove.MorphStroke.A > 1e-6
 				fillA := lerp(srcShapeStyle.FillA, dstShapeStyle.FillA, u)
 				srcPremulR := srcShapeStyle.FillColor.R * srcShapeStyle.FillA
 				srcPremulG := srcShapeStyle.FillColor.G * srcShapeStyle.FillA
@@ -1177,14 +1236,18 @@ func (rt *Runtime) expandMorph(row Row, w winState, mk func(from, to float64, eb
 					B: fillB,
 					A: fillA,
 				}
+				srcMove.MorphHasFill = srcMove.MorphFill.A > 1e-6
 				srcOpRef.Set(s0)
 				dstOpRef.Set(0.0)
 				if u >= 1 {
-					srcMove.MorphPath = nil
+					srcMove.MorphContours = nil
 					srcMove.MorphHasStroke = false
+					srcMove.MorphStrokeW = 0
 					srcMove.MorphHasFill = false
 					srcOpRef.Set(0.0)
+					srcMove.Active = false
 					dstOpRef.Set(1.0)
+					dst.Active = true
 				}
 				return
 			}
@@ -1196,6 +1259,12 @@ func (rt *Runtime) expandMorph(row Row, w winState, mk func(from, to float64, eb
 			if srcMove != nil && len(a.start) > 3 {
 				srcOff, _ := asVec(a.start[3])
 				srcMove.Offset = srcOff.Sub(off.Mul(u))
+			}
+			if u >= 1 {
+				if srcMove != nil {
+					srcMove.Active = false
+				}
+				dst.Active = true
 			}
 		}
 		rt.Anims = append(rt.Anims, a)
@@ -1212,28 +1281,46 @@ func (rt *Runtime) expandMorph(row Row, w winState, mk func(from, to float64, eb
 
 func isTextType(typ string) bool {
 	switch typ {
-	case "tex", "text", "decimal":
+	case "tex", "typst", "text", "decimal":
 		return true
 	}
 	return false
 }
 
-func isShapeType(typ string) bool {
+func canOutline(typ string) bool {
 	switch typ {
-	case "rect", "square", "dot":
+	case "rect", "square", "dot", "tex", "typst", "text", "decimal":
 		return true
 	}
 	return false
 }
+
+// shapeStrokeWorldW is the stroke width (world units) the static renderer uses
+// for shape outlines (rect/square/dot): see the 0.045*ppu line widths in
+// render.go. Text has no stroke, so its morph stroke width is 0 — mirroring
+// manim, where Text/MathTex have stroke_width=0 and Circle has stroke_width≈4.
+const shapeStrokeWorldW = 0.045
 
 type shapeMorphStyle struct {
 	EffectiveColor Color
 	FillColor      Color
 	StrokeA        float64
+	StrokeW        float64 // stroke width in world units (manim: stroke_width)
 	FillA          float64
 }
 
 func shapeStyleForMorph(e *Entity) shapeMorphStyle {
+	if isTextType(e.Type) {
+		col := entityColor(e)
+		return shapeMorphStyle{
+			EffectiveColor: col,
+			FillColor:      col,
+			StrokeA:        0,
+			StrokeW:        0,
+			FillA:          col.A,
+		}
+	}
+
 	var strokeCol Color
 	var strokeA float64
 	switch e.Type {
@@ -1283,14 +1370,17 @@ func shapeStyleForMorph(e *Entity) shapeMorphStyle {
 	// a stroked, filled target (e.g. WHITE stroke + PINK fill dot) drags the
 	// outline toward the fill mid-morph and then snaps back at u>=1.
 	eff := strokeCol
+	strokeW := shapeStrokeWorldW
 	if strokeA <= 0 {
 		// No stroke is drawn; RGB is irrelevant but keep a sane value.
 		eff = entityColor(e)
+		strokeW = 0
 	}
 	return shapeMorphStyle{
 		EffectiveColor: eff,
 		FillColor:      fillCol,
 		StrokeA:        strokeA,
+		StrokeW:        strokeW,
 		FillA:          fillA,
 	}
 }

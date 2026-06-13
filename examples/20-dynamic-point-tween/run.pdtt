@@ -12,6 +12,11 @@ dot target:
   radius: 0.12
   color: color.red
 
+# Make both dots present. Record declarations start inactive.
+| 0.5s
+| source{opacity: 0} -> source
+| target{opacity: 0} -> target
+
 # window 1: source morphs to where target sits at the start ([2.8, 0]) and
 # stays there. It is a straight horizontal slide -- y never moves -- mirroring
 # manim's Transform, which freezes the target snapshot at animation start.

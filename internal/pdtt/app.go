@@ -1,10 +1,12 @@
 package pdtt
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 type Config struct {
@@ -140,6 +142,19 @@ func NewApp(
 }
 
 func (a *App) Run() error {
+	if err := a.run(); err != nil {
+		if writeErr := writeErrorOutput(a.cfg.OutputDir, err); writeErr != nil {
+			return errors.Join(err, writeErr)
+		}
+		return err
+	}
+	return nil
+}
+
+func (a *App) run() error {
+	if err := prepareOutputDir(a.cfg.OutputDir); err != nil {
+		return err
+	}
 	stmts, err := a.parser.ParsePath(a.cfg.InputPath)
 	if err != nil {
 		return err
@@ -152,4 +167,35 @@ func (a *App) Run() error {
 		return err
 	}
 	return a.encoder.Encode(a.cfg)
+}
+
+func writeErrorOutput(outputDir string, renderErr error) error {
+	if err := prepareOutputDir(outputDir); err != nil {
+		return err
+	}
+
+	msg := "render failed\n\n" + renderErr.Error() + "\n"
+	if err := os.WriteFile(filepath.Join(outputDir, "error.txt"), []byte(msg), 0o644); err != nil {
+		return fmt.Errorf("write error.txt: %w", err)
+	}
+	return nil
+}
+
+func prepareOutputDir(outputDir string) error {
+	if isUnsafeOutputDir(outputDir) {
+		return fmt.Errorf("refusing to clear unsafe output directory %q", outputDir)
+	}
+
+	if err := os.RemoveAll(outputDir); err != nil {
+		return fmt.Errorf("clear output dir: %w", err)
+	}
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return fmt.Errorf("create output dir: %w", err)
+	}
+	return nil
+}
+
+func isUnsafeOutputDir(path string) bool {
+	clean := filepath.Clean(strings.TrimSpace(path))
+	return clean == "" || clean == "." || clean == string(filepath.Separator)
 }

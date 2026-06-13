@@ -74,13 +74,15 @@ type Entity struct {
 	Order      []string
 	Parts      []*PartState
 	rt         *Runtime
+	Active     bool // present on screen; declarations start inactive
 
 	// animation state owned by verbs
 	Offset         Vec
 	Reveal         float64
-	MorphPath      []Vec
+	MorphContours  [][]Vec
 	MorphHasStroke bool
 	MorphStroke    Color
+	MorphStrokeW   float64 // interpolated stroke width in world units (manim: stroke_width)
 	MorphHasFill   bool
 	MorphFill      Color
 
@@ -278,7 +280,9 @@ func lerpValue(a, b Value, u float64) Value {
 
 func hexColor(s string) Color {
 	var r, g, b int
-	fmt.Sscanf(s, "#%02x%02x%02x", &r, &g, &b)
+	if _, err := fmt.Sscanf(s, "#%02x%02x%02x", &r, &g, &b); err != nil {
+		return Color{1, 1, 1, 1}
+	}
 	return Color{float64(r) / 255, float64(g) / 255, float64(b) / 255, 1}
 }
 
@@ -415,6 +419,8 @@ func (s *Scope) Eval(e Expr) (Value, error) {
 	switch v := e.(type) {
 	case nil:
 		return nil, nil
+	case litVal:
+		return v.V, nil
 	case Num:
 		return float64(v), nil
 	case Str:
@@ -1029,7 +1035,7 @@ func entitySize(e *Entity) (w, h float64) {
 			r = 0.08
 		}
 		return 2 * r * scale, 2 * r * scale
-	case "tex", "text", "decimal":
+	case "tex", "typst", "text", "decimal":
 		lay := textLayoutOf(e)
 		if lay != nil {
 			return lay.W, lay.H

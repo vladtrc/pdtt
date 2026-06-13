@@ -2,13 +2,17 @@ BIN := ./bin/pdtt
 FPS ?= 30
 W ?= 960
 H ?= 540
+GO_FILES := $(shell git ls-files '*.go')
+GO_LINT_PACKAGES := ./cmd/... ./internal/...
+GOFUMPT := go run mvdan.cc/gofumpt@latest
+GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 
 # every directory under examples/ that has a scene is a renderable example
 EXAMPLES := $(notdir $(wildcard examples/*))
 
 # NB: render-%/ref-% are intentionally NOT .PHONY — GNU Make skips pattern-rule
 # search for phony targets, and there is no file by those names anyway.
-.PHONY: all build render-all ref render example clean
+.PHONY: all build tools format lint fmt render-all ref render example clean
 
 # default: build once, then render every example's res/ in PARALLEL.
 all:
@@ -20,6 +24,19 @@ render-all: $(addprefix render-,$(EXAMPLES))
 build:
 	mkdir -p ./bin
 	go build -o $(BIN) ./cmd/pdtt
+
+tools:
+	go install mvdan.cc/gofumpt@latest
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+
+format:
+	$(GOFUMPT) -w $(GO_FILES)
+
+lint:
+	go vet ./...
+	$(GOLANGCI_LINT) run $(GO_LINT_PACKAGES)
+
+fmt: format lint
 
 # render-<name>: render one example into examples/<name>/res
 render-%: | build

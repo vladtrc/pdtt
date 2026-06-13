@@ -13,13 +13,16 @@ import (
 
 type Expr interface{}
 
-type Num float64
-type Str string
-type Ident string
-type AttrE struct {
-	X    Expr
-	Name string
-}
+type (
+	Num   float64
+	Str   string
+	Ident string
+	AttrE struct {
+		X    Expr
+		Name string
+	}
+)
+
 type IndexE struct { // I == nil means [*]
 	X Expr
 	I Expr
@@ -36,12 +39,15 @@ type UnE struct {
 	Op string
 	X  Expr
 }
-type ListE struct{ Items []Expr }
-type CondE struct{ Then, Cond, Else Expr } // cond ? then : else
-type AlphaE struct {                       // COLOR@55%
-	X   Expr
-	Pct float64
-}
+type (
+	ListE  struct{ Items []Expr }
+	CondE  struct{ Then, Cond, Else Expr } // cond ? then : else
+	AlphaE struct {                        // COLOR@55%
+		X   Expr
+		Pct float64
+	}
+)
+
 type FoldE struct { // scan(init by col)
 	Init Expr
 	By   string
