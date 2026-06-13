@@ -32,8 +32,18 @@ fi
 
 mp4="$(find "$out/videos" -name '*.mp4' -not -path '*/partial_movie_files/*' 2>/dev/null | head -n1 || true)"
 if [ -n "$mp4" ]; then
-	cp "$mp4" "$out/result.mp4"
-	echo "ref: $out/result.mp4"
+	# manim leaves the moov atom at the end of the file; web/preview players
+	# then can't find the codec config up front and report a bogus "missing
+	# H.264 decoder". Remux (no re-encode) to move moov to the front so the
+	# refs play like our own res/result.mp4. Fall back to a plain copy if
+	# ffmpeg isn't available.
+	if command -v ffmpeg >/dev/null 2>&1 &&
+		ffmpeg -nostdin -v error -y -i "$mp4" -c copy -movflags +faststart "$out/result.mp4"; then
+		echo "ref: $out/result.mp4 (faststart)"
+	else
+		cp "$mp4" "$out/result.mp4"
+		echo "ref: $out/result.mp4 (plain copy; ffmpeg faststart unavailable)"
+	fi
 else
 	echo "ref: no mp4 produced for $py"
 fi

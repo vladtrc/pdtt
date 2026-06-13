@@ -69,29 +69,29 @@ func (r *Renderer) Frame(rt *Runtime) *gg.Context {
 		if e.Type == "data" || e.Type == "frame" {
 			continue
 		}
-		op := e.fnum("opacity")
-		if op <= 0.001 {
+		tf := e.transform()
+		if tf.Opacity <= 0.001 {
 			continue
 		}
 		if e.MorphPath != nil {
-			r.drawMorphPath(dc, c, e, op)
+			r.drawMorphPath(dc, c, e, tf)
 			continue
 		}
 		switch e.Type {
 		case "rect", "square":
-			r.drawRect(dc, c, e, op)
+			r.drawRect(dc, c, e, tf)
 		case "dot":
-			r.drawDot(dc, c, e, op)
+			r.drawDot(dc, c, e, tf)
 		case "tex", "text", "decimal":
-			r.drawText(dc, c, e, op)
+			r.drawText(dc, c, e, tf)
 		case "plane":
-			r.drawPlane(dc, c, e, op)
+			r.drawPlane(dc, c, e, tf)
 		case "axes":
-			r.drawAxes(dc, c, e, op)
+			r.drawAxes(dc, c, e, tf)
 		case "plot":
-			r.drawPlot(dc, c, e, op)
+			r.drawPlot(dc, c, e, tf)
 		case "arrow":
-			r.drawArrow(dc, c, e, op)
+			r.drawArrow(dc, c, e, tf)
 		}
 	}
 	return dc
@@ -114,8 +114,8 @@ func outlinePoints(e *Entity, n int) []Vec {
 	if n <= 0 {
 		return nil
 	}
-	at := e.fvec("at").Add(e.Offset)
-	angle := e.fnum("angle")
+	tf := e.transform()
+	at, angle := tf.At, tf.Angle
 	pts := make([]Vec, n)
 	switch e.Type {
 	case "dot":
@@ -123,11 +123,7 @@ func outlinePoints(e *Entity, n int) []Vec {
 		if r == 0 {
 			r = 0.08
 		}
-		scale := e.fnum("scale")
-		if scale == 0 {
-			scale = 1
-		}
-		r *= scale
+		r *= tf.Scale
 		for i := range pts {
 			theta := 2 * math.Pi * float64(i) / float64(n)
 			pts[i] = Vec{at[0] + r*math.Cos(theta), at[1] + r*math.Sin(theta), at[2]}
@@ -155,10 +151,11 @@ func outlinePoints(e *Entity, n int) []Vec {
 	return pts
 }
 
-func (r *Renderer) drawMorphPath(dc *gg.Context, c cam, e *Entity, op float64) {
+func (r *Renderer) drawMorphPath(dc *gg.Context, c cam, e *Entity, tf Transform) {
 	if len(e.MorphPath) == 0 {
 		return
 	}
+	op := tf.Opacity
 	trace := func() {
 		for i, p := range e.MorphPath {
 			x, y := c.sx(p)
@@ -225,10 +222,11 @@ func drawRectStrokeProgress(dc *gg.Context, w, h, progress float64) {
 	}
 }
 
-func (r *Renderer) drawRect(dc *gg.Context, c cam, e *Entity, op float64) {
-	at := e.fvec("at").Add(e.Offset)
+func (r *Renderer) drawRect(dc *gg.Context, c cam, e *Entity, tf Transform) {
+	op := tf.Opacity
+	at := tf.At
 	w, h := entitySize(e)
-	angle := e.fnum("angle")
+	angle := tf.Angle
 	draw := clamp01(e.fnum("draw"))
 	if draw <= 0 {
 		return
@@ -256,18 +254,15 @@ func (r *Renderer) drawRect(dc *gg.Context, c cam, e *Entity, op float64) {
 	dc.Pop()
 }
 
-func (r *Renderer) drawDot(dc *gg.Context, c cam, e *Entity, op float64) {
-	at := e.fvec("at").Add(e.Offset)
+func (r *Renderer) drawDot(dc *gg.Context, c cam, e *Entity, tf Transform) {
+	op := tf.Opacity
+	at := tf.At
 	rad := e.fnum("radius")
 	if rad == 0 {
 		rad = 0.08
 	}
-	scale := e.fnum("scale")
-	if scale == 0 {
-		scale = 1
-	}
 	x, y := c.sx(at)
-	rpx := rad * scale * c.ppu
+	rpx := rad * tf.Scale * c.ppu
 	fill := entityColor(e)
 	if f, ok := e.Fields["fill"]; ok && f.Val != nil {
 		if col, err := asColor(f.Val); err == nil {
@@ -287,12 +282,13 @@ func (r *Renderer) drawDot(dc *gg.Context, c cam, e *Entity, op float64) {
 	}
 }
 
-func (r *Renderer) drawText(dc *gg.Context, c cam, e *Entity, op float64) {
+func (r *Renderer) drawText(dc *gg.Context, c cam, e *Entity, tf Transform) {
+	op := tf.Opacity
 	lay := textLayoutOf(e)
 	if lay == nil {
 		return
 	}
-	at := e.fvec("at").Add(e.Offset)
+	at := tf.At
 	emPx := lay.Em * c.ppu
 	if emPx < 1 {
 		return
@@ -367,7 +363,8 @@ func (r *Renderer) polyline(dc *gg.Context, c cam, pts []Vec) {
 	dc.Stroke()
 }
 
-func (r *Renderer) drawPlane(dc *gg.Context, c cam, e *Entity, op float64) {
+func (r *Renderer) drawPlane(dc *gg.Context, c cam, e *Entity, tf Transform) {
+	op := tf.Opacity
 	rt := e.rt
 	draw := e.fnum("draw")
 	if draw <= 0 {
@@ -375,7 +372,7 @@ func (r *Renderer) drawPlane(dc *gg.Context, c cam, e *Entity, op float64) {
 	}
 	xr := rangeOf(e, "x_range", -7, 7)
 	yr := rangeOf(e, "y_range", -4, 4)
-	at := e.fvec("at").Add(e.Offset)
+	at := tf.At
 	lineCol := hexColor("#29ABCA")
 	axisCol := namedColors["white"]
 
@@ -422,7 +419,8 @@ func (r *Renderer) drawPlane(dc *gg.Context, c cam, e *Entity, op float64) {
 	r.polyline(dc, c, sampleLine(Vec{xr[0], 0, 0}, Vec{xr[1], 0, 0}))
 }
 
-func (r *Renderer) drawAxes(dc *gg.Context, c cam, e *Entity, op float64) {
+func (r *Renderer) drawAxes(dc *gg.Context, c cam, e *Entity, tf Transform) {
+	op := tf.Opacity
 	xr := rangeOf(e, "x_range", -7, 7)
 	yr := rangeOf(e, "y_range", -4, 4)
 	col := namedColors["white"]
@@ -476,7 +474,8 @@ func (r *Renderer) arrowHead(dc *gg.Context, c cam, tip, dir Vec, op float64, co
 	dc.Fill()
 }
 
-func (r *Renderer) drawPlot(dc *gg.Context, c cam, e *Entity, op float64) {
+func (r *Renderer) drawPlot(dc *gg.Context, c cam, e *Entity, tf Transform) {
+	op := tf.Opacity
 	rt := e.rt
 	draw := e.fnum("draw")
 	if draw <= 0 {
@@ -527,7 +526,8 @@ func (r *Renderer) drawPlot(dc *gg.Context, c cam, e *Entity, op float64) {
 	}
 }
 
-func (r *Renderer) drawArrow(dc *gg.Context, c cam, e *Entity, op float64) {
+func (r *Renderer) drawArrow(dc *gg.Context, c cam, e *Entity, tf Transform) {
+	op := tf.Opacity
 	draw := e.fnum("draw")
 	if draw <= 0.001 {
 		return

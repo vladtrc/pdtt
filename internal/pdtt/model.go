@@ -93,6 +93,31 @@ type Entity struct {
 	layoutKey   string
 }
 
+// Transform is an entity's spatial state for one frame: world position
+// (the `at` field plus the verb-owned animation Offset), uniform Scale,
+// Angle, and Opacity. Renderers and attr lookups read these through
+// e.transform() instead of re-deriving them — one place owns the defaults
+// (scale 0 → 1) and the fact that position lives in `at` + Offset.
+type Transform struct {
+	At      Vec
+	Scale   float64
+	Angle   float64
+	Opacity float64
+}
+
+func (e *Entity) transform() Transform {
+	scale := e.fnum("scale")
+	if scale == 0 {
+		scale = 1
+	}
+	return Transform{
+		At:      e.fvec("at").Add(e.Offset),
+		Scale:   scale,
+		Angle:   e.fnum("angle"),
+		Opacity: e.fnum("opacity"),
+	}
+}
+
 func (e *Entity) field(name string) *Field {
 	if f, ok := e.Fields[name]; ok {
 		return f
@@ -649,7 +674,7 @@ func (s *Scope) entityAttr(e *Entity, name string) (Value, error) {
 			return boundMethod{recv: e, name: "point"}, nil
 		}
 	}
-	at := e.fvec("at").Add(e.Offset)
+	at := e.transform().At
 	w, h := entitySize(e)
 	switch name {
 	case "at":
@@ -804,9 +829,8 @@ func entOf(v Value) *Entity {
 
 func anchorOf(s *Scope, v Value) (Vec, float64, float64) {
 	if e := entOf(v); e != nil {
-		at := e.fvec("at").Add(e.Offset)
 		w, h := entitySize(e)
-		return at, w, h
+		return e.transform().At, w, h
 	}
 	if p, ok := v.(*PartState); ok {
 		at, w, h := partBox(p)
@@ -993,10 +1017,7 @@ func evalWith(rt *Runtime, e Expr, name string, v Value) (Value, error) {
 // ---------- geometry helpers used by attrs & render ----------
 
 func entitySize(e *Entity) (w, h float64) {
-	scale := e.fnum("scale")
-	if scale == 0 {
-		scale = 1
-	}
+	scale := e.transform().Scale
 	switch e.Type {
 	case "rect":
 		return e.fnum("w") * scale, e.fnum("h") * scale

@@ -182,10 +182,7 @@ func textLayoutOf(e *Entity) *TextLayout {
 	if raw == "" {
 		return nil
 	}
-	scale := e.fnum("scale")
-	if scale == 0 {
-		scale = 1
-	}
+	scale := e.transform().Scale
 	fs := e.fnum("font_size")
 	if fs == 0 {
 		fs = 48
@@ -256,7 +253,7 @@ func textLayoutOf(e *Entity) *TextLayout {
 // partBox in world coordinates (absolute).
 func (lay *TextLayout) partBox(p *PartState) (Vec, float64, float64) {
 	e := p.E
-	at := e.fvec("at").Add(e.Offset)
+	at := e.transform().At
 	for _, line := range lay.Lines {
 		for _, sg := range line.Segs {
 			if sg.Part == p {
