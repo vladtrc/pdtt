@@ -1,6 +1,6 @@
 module github.com/vladtrc/pdtt
 
-go 1.25
+go 1.25.4
 
 require (
 	github.com/fogleman/gg v1.3.0
