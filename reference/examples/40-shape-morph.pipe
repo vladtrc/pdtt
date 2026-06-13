@@ -1,0 +1,26 @@
+scene shape_morph
+# Match manim benchmark/01-square-to-circle.py :: SquareToCircle.
+# 1s Create(square), 1s Transform(square -> circle), 1s FadeOut.
+
+square s:
+  at: ORIGIN
+  side: 2
+  angle: -3 * TAU / 8
+  stroke: WHITE
+  draw: 0
+
+dot d:
+  at: ORIGIN
+  radius: 1
+  stroke: WHITE
+  fill: PINK @ 50%
+  opacity: 0
+
+| 1s
+| s.draw -> 1
+
+| 1s
+| morph s -> d
+
+| 1s
+| d.opacity -> 0

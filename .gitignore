@@ -1,0 +1,5 @@
+/bin/
+frames/
+*.tmp
+examples/*/res/
+examples/*/ref/

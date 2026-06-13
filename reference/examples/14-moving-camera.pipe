@@ -1,0 +1,37 @@
+# Rewrites benchmark/14-moving-camera.py
+# Tests: the camera is an ordinary record — builtin `frame`, no scene class, no mode.
+# save_state is `=` capture; Restore is a record arrow whose fields pair by name.
+# Zero glossary was spent on any of this.
+
+scene change_camera
+
+tex nabla:
+  text: "\\nabla\\textbf{u}"
+  scale: 3
+  at: left(2.5)
+
+square sq:
+  side: 2
+  at: right_of(nabla, 3)
+
+home = frame                   # camera.save_state()
+
+| 2s smooth
+| frame.w -> nabla.w * 1.2
+| frame.at -> nabla.at
+
+| 1s
+
+| 1.5s smooth
+| frame -> home                # Restore(camera_frame)
+
+| 2s smooth
+| frame.h -> sq.w * 1.2
+| frame.at -> sq.at
+
+| 1s
+
+| 1.5s smooth
+| frame -> home
+
+| 1s

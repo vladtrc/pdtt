@@ -1,0 +1,68 @@
+# Stress: the compaction's own failure modes.
+# Part 1 — `it` shadowing in nested per-element contexts; `as` is the escape.
+# Part 2 — window-shorthand edge cases (`-.5`, `.5-`, bare `-`).
+# Part 3 — refused forms (the wall + rate-field writer).
+
+scene one_writer_soup
+
+extern fn spiral(i: int, n: int) -> point
+
+dot probes:
+  for: range(12)
+  at: spiral(it.i, it.n)       # STATIC: extern fns are pure/eval-time, no moving input —
+  radius: .05                  # so probes[*].at stays tweenable despite being an expr
+  color: WHITE
+  opacity: 0
+
+data pulses:                   # column soup is still legal-but-wrong: three records
+  for: range(6)                # wearing a data costume (30's warning survives the merge,
+  gap: .12                     # unfixed — the glossary budget bought no lint)
+  amp: scan(.12 by gap)
+
+dot leader:
+  fill: YELLOW
+  at: left(3)
+
+dot chaser:
+  fill: RED
+  rate at: (leader.at - self) / .25     # 33's `follow`, as in 35
+
+tex tag:
+  text: "leader"
+  at: above(leader, .3)        # LIVE — follows leader while no arrow overrides it
+
+| 1s
+
+| 2s
+| stagger .04 | probes[*].opacity -> 1
+| leader.at -> right(3)
+
+| 1s smooth
+| tag.at -> corner(UR)         # OK: arrow detaches tag.at from its live expr,
+                               # tween starts from current live value (above leader
+                               # at its new position), field is static after.
+
+# `it` shadowing: the broadcast rebinds `it`, so the each-row needs a name.
+| each pulses as pulse .6s
+| -.4 | stagger .05 | ease_in | probes[*].scale -> 1 + pulse.amp * it.i / it.n
+| .3- | linear | probes[*].color -> RED if it.i % 3 == 2 else WHITE
+| .5- | after .05s | probes[*].scale -> 1
+
+# The conditional RHS retires 29's sparse-zip problem: no 12-entry literal to color
+# four dots. Max-density rows remain legal and remain hard to read — the budget shrank
+# the glossary, not the combinatorics (35's warning stands; still no density lint).
+
+# Window shorthand edges:
+#   `-.5`  = 0 to .5   (from defaults to 0)
+#   `.5-`  = .5 to 1   (to defaults to 1)
+#   `-`    = compile error: empty window — write nothing instead
+#   negative bounds do not exist; a modifier cell is never arithmetic, so `-.5` cannot
+#   mean minus-one-half. `-.5-1` is a parse error, not "from -0.5".
+
+| 1s
+
+# --- REFUSED (the wall + rate-field writer, per proposal — not re-litigated per example) ---
+# | each frames 0s | maybe_restyle coin     # discrete per-frame logic (UpdateFunc)
+# | chaser.at -> left(1)                    # rate-defined: the integrator is the writer
+# data acts: reveal: slot == 1              # conditionals make values, never gate rows
+# extern gen whole_scene(...) -> score      # holes that emit score stay unrepresentable

@@ -1,0 +1,50 @@
+# Rewrites benchmark/05-updater-counter.py (Old2 + the ValueTracker/DecimalNumber
+# features the benchmark indexes; UpdateFunc is refused — the wall, per proposal).
+# Tests: live fields replace always_redraw/bind; one-writer rule; clear_updaters is
+# snapshot + `set`; the counter is ONE live field, not 30's per-row expansion arrows.
+# This is the mandatory scene concept 35 skipped.
+
+scene updater_counter
+
+x = 0
+
+rect box:
+  w: 6
+  h: 4
+  fill: BLUE@55%
+  stroke: WHITE
+  at: center
+
+tex label:
+  text: "ln(2)"
+  at: center(box)            # LIVE: reads box.at, which the score tweens below.
+                             # This one line is the entire always_redraw lambda.
+
+decimal readout:
+  value: x                   # LIVE: the DecimalNumber counter. No updater, no bind,
+  decimals: 2                # no per-row arrows — `x` is tweened, this just reads it.
+  at: below(box, .4)
+
+| 3s
+| box.scale -> .5
+| box.at -> corner(UL)
+| linear | x -> 100
+
+# | label.at -> center      # COMPILE ERROR: label.at is live (reads box.at, written by
+#                             the score). One writer per field — tween box.at instead.
+
+| 1s
+
+# clear_updaters(): capture the live value, then redefine the field as that constant.
+# `=` captures, `:` defines — no keyword exists for this because none is needed.
+pinned = label.at
+tex label:
+  set at: pinned
+
+| 3s
+| box.at -> edge(RIGHT)      # label stays pinned; readout still follows the box
+
+| 1s
+
+# UpdateFunc (random per-frame coin restyle) from the same benchmark file: refused by
+# design — discrete per-frame logic has no home in the language (proposal, cost cuts).

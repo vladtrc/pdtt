@@ -1,0 +1,87 @@
+# Rewrites benchmark/07-polynomial-roots.py
+# Tests: `it` binder replaces item/i/count; ops broadcast like arrows — `morph` over
+# parts closes the LaggedStart(FadeTransform) gap that 29/35 patched with staggered
+# opacity; `roots[it.i]` indexing replaces `sibling[i]`; optional-bound windows.
+# Benchmark truncation: expansion combinatorics and camera tail omitted (as 28/29/35).
+
+scene polynomial_roots
+
+tex poly:
+  text: "P(x)=x^3+{c2}c_2{/c2}x^2+{c1}c_1{/c1}x+{c0}c_0{/c0}"
+  at: corner(UL)
+  parts: [c2, c1, c0]
+  opacity: 0
+
+tex question:
+  text: "Can you construct a cubic with roots at $x=1$, $x=2$, $x=4$?"
+  at: below(poly, .5)
+  parts: [root1, root2, root3]
+  opacity: 0
+
+axes ax:
+  x_range: [-4, 4, 1]
+  y_range: [-6, 6, 2]
+  at: center
+  opacity: 0
+
+plot curve:
+  axes: ax
+  fn: (x - 1) * (x - 2) * (x - 4)
+  draw: 0
+  color: BLUE
+
+dot roots:                       # singular type + for: = three dots; `dots` is deleted
+  for: [1, 2, 4]
+  at: ax.point(it, 0)
+  radius: .06
+  color: YELLOW
+  opacity: 0
+
+| 1.3s
+| write poly
+| .4- | question.opacity -> 1
+| 0s | poly.parts[*].color -> RED_B
+| 0s | question.parts[*].color -> YELLOW
+
+| 1s
+
+| 4s
+| -.25 | ax.opacity -> 1
+| .15- | linear | curve.draw -> 1
+| .55- | stagger .18 | morph question.parts[*] -> roots[it.i]
+| poly.parts[*].color -> [RED_B, GREEN, YELLOW]
+
+# The morph row IS the FadeTransform: each named part flies into its dot, paired by
+# position (collections pair by position, structures by name). The source part fades
+# with the morph — the original kept faded copies; cut named in the honesty audit.
+
+tex factored:
+  text: "P(x)=(x-{r1}r_1{/r1})(x-{r2}r_2{/r2})(x-{r3}r_3{/r3})"
+  at: below(poly, .35)
+  parts: [r1, r2, r3]
+  opacity: 0
+
+arrow root_arrows:
+  for: roots
+  color: YELLOW
+  draw: 0
+
+| 2.5s
+| -.25 | question.opacity -> 0
+| .2-.7 | factored.opacity -> 1
+| .45- | stagger .12 | root_arrows[*].from -> factored.parts[it.i].bottom
+| .45- | stagger .12 | root_arrows[*].to -> roots[it.i].top
+| .45- | stagger .12 | root_arrows[*].draw -> 1
+| factored.parts[*].color -> YELLOW
+
+| 1s
+
+| 2s
+| poly.opacity -> .25
+| ax.opacity -> .35
+| curve.color -> WHITE
+| root_arrows[*].draw -> 0
+| factored.at -> center
+| factored.scale -> 1.2
+
+| 2s
