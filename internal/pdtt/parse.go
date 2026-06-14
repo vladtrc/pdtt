@@ -19,9 +19,25 @@ type (
 	ExternStmt struct{ Name string }
 )
 
+// FamilyStmt is a plural-record family declared with the domain-binder syntax:
+//
+//	NAME[domainExpr as bindVar]:
+//	  TYPE memberName:
+//	    field: expr
+//	  ...
+type FamilyStmt struct {
+	Name       string
+	DomainE    Expr   // e.g. val.indices or 0..n
+	BindVar    string // e.g. "i"
+	Members    []RecordStmt
+	Line       int
+	baseIndent int // detected from first indented line (parser-internal)
+}
+
 type CaptureStmt struct {
 	Name string
 	E    Expr
+	Live bool // true for colon-binding (`name: expr`) — re-evaluated each frame
 	Line int
 }
 
@@ -34,7 +50,8 @@ type FieldDef struct {
 
 type RecordStmt struct {
 	Type, Name string
-	ForE       Expr // row source: list / range(n) / record name
+	ForE       Expr   // row source: list / range(n) / record name
+	ForVar     string // bound variable name for domain-binder `NAME[domain as i]:`
 	Fields     []FieldDef
 	Line       int
 }
@@ -87,6 +104,8 @@ var (
 	recordRe     = regexp.MustCompile(`^(\w+) (\w+):$`)
 	ctorRecordRe = regexp.MustCompile(`^(\w+)\((.*)\)\s+(\w+):$`)
 	captureRe    = regexp.MustCompile(`^(\w+)\s*=\s*(.+)$`)
+	colonBindRe  = regexp.MustCompile(`^(\w+)\s*:\s*(.+)$`)        // name: expr  (top-level colon binding)
+	familyRe     = regexp.MustCompile(`^(\w+)\[(.+) as (\w+)\]:$`) // NAME[domain as i]:
 	durRe        = regexp.MustCompile(`^(\d*\.?\d+)(s|%)?$`)
 	winRe        = regexp.MustCompile(`^(\d*\.?\d+(?:%|s)?)?-(\d*\.?\d+(?:%|s)?)?$`)
 	foldRe       = regexp.MustCompile(`^scan\((.+) by (\w+)\)$`)
@@ -138,11 +157,40 @@ func stripComment(s string) string {
 	return s
 }
 
+// indentDepth returns the number of leading spaces/tabs of a raw line
+// (treating each tab as 1 unit). We only need to distinguish 0 / 1 / 2.
+func indentDepth(raw string) int {
+	n := 0
+	for _, c := range raw {
+		if c == ' ' || c == '\t' {
+			n++
+		} else {
+			break
+		}
+	}
+	return n
+}
+
 func ParseFile(src string) ([]Stmt, error) {
 	rawLines := strings.Split(src, "\n")
 	var stmts []Stmt
 	var curRecord *RecordStmt
 	var curBlock *BlockStmt
+	var curFamily *FamilyStmt
+	var curFamilyMember *RecordStmt // current member record inside a family
+	flushFamilyMember := func() {
+		if curFamilyMember != nil {
+			curFamily.Members = append(curFamily.Members, *curFamilyMember)
+			curFamilyMember = nil
+		}
+	}
+	flushFamily := func() {
+		if curFamily != nil {
+			flushFamilyMember()
+			stmts = append(stmts, *curFamily)
+			curFamily = nil
+		}
+	}
 	flushRecord := func() {
 		if curRecord != nil {
 			stmts = append(stmts, *curRecord)
@@ -162,10 +210,94 @@ func ParseFile(src string) ([]Stmt, error) {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			flushRecord()
-			flushBlock()
+			// Don't flush a family on blank lines — blank lines appear between members.
+			// The family is flushed when a non-indented, non-blank line is seen.
+			if curFamily == nil {
+				flushBlock()
+			}
 			continue
 		}
-		indented := line[0] == ' ' || line[0] == '\t'
+		depth := indentDepth(line)
+		indented := depth > 0
+
+		// Inside a family: "shallow" indent = member header, "deeper" indent = member field
+		// We detect the family's base indent level from the first indented line.
+		if curFamily != nil {
+			if !indented {
+				// End of family block
+				flushFamily()
+				// fall through to top-level handling below
+			} else if curFamily.baseIndent == 0 {
+				// First indented line in this family: set the base indent level
+				curFamily.baseIndent = depth
+				// This line is a member header
+				flushFamilyMember()
+				if m := ctorRecordRe.FindStringSubmatch(trimmed); m != nil {
+					typ := m[1]
+					if typ != "text" && typ != "typst" {
+						return nil, fmt.Errorf("line %d: constructor-style records are only supported for text(...) and typst(...)", ln)
+					}
+					e, err := ParseExpr(m[2])
+					if err != nil {
+						return nil, fmt.Errorf("line %d: %v", ln, err)
+					}
+					curFamilyMember = &RecordStmt{
+						Type: typ,
+						Name: m[3],
+						Fields: []FieldDef{{
+							Name: "text",
+							E:    e,
+							Line: ln,
+						}},
+						Line: ln,
+					}
+				} else if m := recordRe.FindStringSubmatch(trimmed); m != nil {
+					curFamilyMember = &RecordStmt{Type: m[1], Name: m[2], Line: ln}
+				} else {
+					return nil, fmt.Errorf("line %d: expected member record header inside family block, got %q", ln, trimmed)
+				}
+				continue
+			} else if depth == curFamily.baseIndent {
+				// Same level as member headers: a new member header
+				flushFamilyMember()
+				if m := ctorRecordRe.FindStringSubmatch(trimmed); m != nil {
+					typ := m[1]
+					if typ != "text" && typ != "typst" {
+						return nil, fmt.Errorf("line %d: constructor-style records are only supported for text(...) and typst(...)", ln)
+					}
+					e, err := ParseExpr(m[2])
+					if err != nil {
+						return nil, fmt.Errorf("line %d: %v", ln, err)
+					}
+					curFamilyMember = &RecordStmt{
+						Type: typ,
+						Name: m[3],
+						Fields: []FieldDef{{
+							Name: "text",
+							E:    e,
+							Line: ln,
+						}},
+						Line: ln,
+					}
+				} else if m := recordRe.FindStringSubmatch(trimmed); m != nil {
+					curFamilyMember = &RecordStmt{Type: m[1], Name: m[2], Line: ln}
+				} else {
+					return nil, fmt.Errorf("line %d: expected member record header inside family block, got %q", ln, trimmed)
+				}
+				continue
+			} else {
+				// depth > baseIndent: member field
+				if curFamilyMember == nil {
+					return nil, fmt.Errorf("line %d: indented field line without a member header in family", ln)
+				}
+				fd, err := parseFieldLine(trimmed, ln)
+				if err != nil {
+					return nil, err
+				}
+				curFamilyMember.Fields = append(curFamilyMember.Fields, fd)
+				continue
+			}
+		}
 
 		if indented {
 			if curRecord == nil {
@@ -215,6 +347,20 @@ func ParseFile(src string) ([]Stmt, error) {
 			}
 			stmts = append(stmts, ExternStmt{Name: name})
 		default:
+			// family binder: NAME[domain as i]:
+			if m := familyRe.FindStringSubmatch(trimmed); m != nil {
+				domainE, err := ParseExpr(m[2])
+				if err != nil {
+					return nil, fmt.Errorf("line %d: family domain: %v", ln, err)
+				}
+				curFamily = &FamilyStmt{
+					Name:    m[1],
+					DomainE: domainE,
+					BindVar: m[3],
+					Line:    ln,
+				}
+				continue
+			}
 			if m := ctorRecordRe.FindStringSubmatch(trimmed); m != nil {
 				typ := m[1]
 				if typ != "text" && typ != "typst" {
@@ -248,10 +394,22 @@ func ParseFile(src string) ([]Stmt, error) {
 				stmts = append(stmts, CaptureStmt{Name: m[1], E: e, Line: ln})
 				continue
 			}
+			// top-level colon binding: `name: expr` (live global, equivalent to `name = expr` but live)
+			// Exception: if the RHS is a `snapshot expr`, treat as frozen (one-time capture).
+			if m := colonBindRe.FindStringSubmatch(trimmed); m != nil {
+				e, err := ParseExpr(m[2])
+				if err != nil {
+					return nil, fmt.Errorf("line %d: %v", ln, err)
+				}
+				_, isSnapshot := e.(SnapshotE)
+				stmts = append(stmts, CaptureStmt{Name: m[1], E: e, Live: !isSnapshot, Line: ln})
+				continue
+			}
 			return nil, fmt.Errorf("line %d: unrecognized top-level form: %q", ln, trimmed)
 		}
 	}
 	flushRecord()
+	flushFamily()
 	flushBlock()
 	return stmts, nil
 }
@@ -532,11 +690,27 @@ func parseOpCell(c string, ln int) (RowOp, error) {
 		if err != nil {
 			return RowOp{}, err
 		}
-		if rhsText != name {
+		// For broadcast enter tweens (`roots[* as i].mark{...} -> roots[i].mark`),
+		// the names won't match exactly. Allow them through if the LHS contains `[*`.
+		if rhsText != name && !strings.Contains(name, "[*") {
 			return RowOp{}, fmt.Errorf("line %d: object update tween is a self-transition; both sides must name the same object (`%s{...} -> %s`), got %q", ln, name, name, rhsText)
 		}
 		if len(overrides) == 0 {
 			return RowOp{}, fmt.Errorf("line %d: object update tween needs at least one overridden field, e.g. `%s{opacity: 0} -> %s`", ln, name, name)
+		}
+		// For broadcast: store the full LHS path (with `[*`) as the enter name.
+		// The RHS is stored separately in LHS/RHS of RowOp for broadcast resolution.
+		if strings.Contains(name, "[*") {
+			// Parse name as LHS expr and rhsText as RHS expr for broadcast enter
+			lhsE, err2 := ParseExpr(name)
+			if err2 != nil {
+				return RowOp{}, fmt.Errorf("line %d: %v", ln, err2)
+			}
+			rhsE, err2 := ParseExpr(rhsText)
+			if err2 != nil {
+				return RowOp{}, fmt.Errorf("line %d: %v", ln, err2)
+			}
+			return RowOp{Kind: "enter_broadcast", LHS: lhsE, RHS: rhsE, Overrides: overrides}, nil
 		}
 		return RowOp{Kind: "enter", EnterName: name, Overrides: overrides}, nil
 	}

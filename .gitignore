@@ -1,6 +1,6 @@
 /bin/
 frames/
 *.tmp
-examples/*/res/
+examples/*/res*/
 examples/*/ref/
 __pycache__/

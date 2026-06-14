@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -39,6 +40,18 @@ func resolveAnchored(e *Entity, v Value) Value {
 type Snapshot struct {
 	Of     string
 	Fields map[string]Value
+}
+
+func snapshotValue(v Value) Value {
+	e, ok := v.(*Entity)
+	if !ok {
+		return v
+	}
+	snap := Snapshot{Of: e.Name, Fields: map[string]Value{}}
+	for name, f := range e.Fields {
+		snap.Fields[name] = f.Val
+	}
+	return snap
 }
 
 type ItVal struct {
@@ -182,9 +195,37 @@ type Group struct {
 	Items []*Entity
 }
 
+// RecordFamily stores the structure of a domain-binder family declaration.
+// The actual entities are stored in rt.Groups under computed names
+// (see familyMemberName). The Group named after the family's name holds
+// one synthetic Entity per instance (used for broadcast [*] over the family).
+type RecordFamily struct {
+	Name     string
+	N        int   // number of instances
+	Keys     []int // domain keys in declaration order
+	KeyToPos map[int]int
+	Members  []string // member names in declaration order, e.g. ["mark", "hit", "factor", "n"]
+}
+
+// familyMemberName returns the entity/group name for member `mem` of instance `idx`
+// in family `family`.
+func familyMemberName(family string, idx int, mem string) string {
+	return fmt.Sprintf("%s__%d__%s", family, idx, mem)
+}
+
+// FamilyInstance is the runtime value of `roots[i]` — a handle to one instance
+// of a family with named member entities.
+type FamilyInstance struct {
+	Family *RecordFamily
+	Idx    int
+	rt     *Runtime
+}
+
 type GVar struct {
 	Name string
 	Val  Value
+	Live bool // true for colon-binding (`name: expr`) — re-evaluated each frame
+	Def  Expr // non-nil if Live
 }
 
 // ---------- conversions ----------
@@ -381,6 +422,12 @@ func (s *Scope) lookup(name string) (Value, error) {
 			return v, nil
 		}
 		if it, ok := s.binds["it"].(ItVal); ok {
+			// Check the ItVal.Cols for named bind variables (family binder, data columns)
+			if it.Cols != nil {
+				if c, ok := it.Cols[name]; ok {
+					return c, nil
+				}
+			}
 			switch name {
 			case "i":
 				return float64(it.I), nil
@@ -463,6 +510,28 @@ func (s *Scope) Eval(e Expr) (Value, error) {
 		return -f, nil
 	case BinE:
 		return s.evalBin(v)
+	case RangeE:
+		start, err := s.Eval(v.Start)
+		if err != nil {
+			return nil, err
+		}
+		end, err := s.Eval(v.End)
+		if err != nil {
+			return nil, err
+		}
+		sf, err := asFloat(start)
+		if err != nil {
+			return nil, err
+		}
+		ef, err := asFloat(end)
+		if err != nil {
+			return nil, err
+		}
+		var out []Value
+		for i := int(sf); i < int(ef); i++ {
+			out = append(out, float64(i))
+		}
+		return out, nil
 	case CondE:
 		c, err := s.Eval(v.Cond)
 		if err != nil {
@@ -483,7 +552,21 @@ func (s *Scope) Eval(e Expr) (Value, error) {
 		if err != nil {
 			return nil, err
 		}
-		return s.attr(x, v.Name)
+		result, attrErr := s.attr(x, v.Name)
+		if attrErr != nil {
+			// If the base expression is a simple name that also names a namespace,
+			// and the attribute lookup failed (e.g. user named their list `color`
+			// shadowing the `color` namespace), fall back to the namespace.
+			if id, ok := v.X.(Ident); ok {
+				if ns, ok2 := namespaces[string(id)]; ok2 {
+					if nsv, ok3 := ns[v.Name]; ok3 {
+						return nsv, nil
+					}
+				}
+			}
+			return nil, attrErr
+		}
+		return result, nil
 	case IndexE:
 		x, err := s.Eval(v.X)
 		if err != nil {
@@ -505,6 +588,15 @@ func (s *Scope) Eval(e Expr) (Value, error) {
 		return s.evalCall(v)
 	case FoldE:
 		return nil, fmt.Errorf("fold expression outside a data column")
+	case SnapshotE:
+		// Evaluate the inner expression and return it as a frozen value.
+		// The live-eval pass treats snapshot as not live (no deps), so this
+		// value is only computed once at declaration/event time.
+		val, err := s.Eval(v.X)
+		if err != nil {
+			return nil, err
+		}
+		return snapshotValue(val), nil
 	}
 	return nil, fmt.Errorf("cannot evaluate %T", e)
 }
@@ -517,8 +609,17 @@ func indexValue(x Value, i int) (Value, error) {
 		}
 		return v[i], nil
 	case *Group:
+		// If this group is a family proxy group, return a FamilyInstance
+		if len(v.Items) > 0 && v.Items[0].Type == "__family_proxy__" && v.Items[0].rt != nil {
+			if fam, ok := v.Items[0].rt.Families[v.Name]; ok {
+				if _, ok := fam.KeyToPos[i]; !ok {
+					return nil, fmt.Errorf("family %s has no key %d", v.Name, i)
+				}
+				return FamilyInstance{Family: fam, Idx: i, rt: v.Items[0].rt}, nil
+			}
+		}
 		if i < 0 || i >= len(v.Items) {
-			return nil, fmt.Errorf("index %d out of range for record %s", i, v.Name)
+			return nil, fmt.Errorf("index %d out of range for record %s (len %d)", i, v.Name, len(v.Items))
 		}
 		return v.Items[i], nil
 	case partsRef:
@@ -545,6 +646,8 @@ func (s *Scope) evalBin(v BinE) (Value, error) {
 		return nil, err
 	}
 	// vector arithmetic when either side is (coercible to) a point
+	// Check this BEFORE list-vectorized arithmetic so that
+	// `Vec + [x, y]` coerces the list to Vec, not element-wise.
 	lv, lIsVec := l.(Vec)
 	rv, rIsVec := r.(Vec)
 	if list, ok := l.([]Value); ok && rIsVec {
@@ -589,39 +692,63 @@ func (s *Scope) evalBin(v BinE) (Value, error) {
 		}
 		return nil, fmt.Errorf("bad point arithmetic: %v", v.Op)
 	}
-	lf, err := asFloat(l)
-	if err != nil {
-		return nil, err
+	lf, lfErr := asFloat(l)
+	rf, rfErr := asFloat(r)
+	if lfErr == nil && rfErr == nil {
+		switch v.Op {
+		case "+":
+			return lf + rf, nil
+		case "-":
+			return lf - rf, nil
+		case "*":
+			return lf * rf, nil
+		case "/":
+			return lf / rf, nil
+		case "%":
+			return math.Mod(lf, rf), nil
+		case "==":
+			return lf == rf, nil
+		case "!=":
+			return lf != rf, nil
+		case "<":
+			return lf < rf, nil
+		case ">":
+			return lf > rf, nil
+		case "<=":
+			return lf <= rf, nil
+		case ">=":
+			return lf >= rf, nil
+		}
+		return nil, fmt.Errorf("unknown operator %q", v.Op)
 	}
-	rf, err := asFloat(r)
-	if err != nil {
-		return nil, err
+	// Vectorized arithmetic: scalar/list op list/scalar → element-wise list result
+	// Used for `prod(x - val)` patterns (x is float, val is list).
+	if lList, ok := l.([]Value); ok {
+		var out []Value
+		for _, elem := range lList {
+			res, err := s.evalBin(BinE{Op: v.Op, L: litVal{V: elem}, R: litVal{V: r}})
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, res)
+		}
+		return out, nil
 	}
-	switch v.Op {
-	case "+":
-		return lf + rf, nil
-	case "-":
-		return lf - rf, nil
-	case "*":
-		return lf * rf, nil
-	case "/":
-		return lf / rf, nil
-	case "%":
-		return math.Mod(lf, rf), nil
-	case "==":
-		return lf == rf, nil
-	case "!=":
-		return lf != rf, nil
-	case "<":
-		return lf < rf, nil
-	case ">":
-		return lf > rf, nil
-	case "<=":
-		return lf <= rf, nil
-	case ">=":
-		return lf >= rf, nil
+	if rList, ok := r.([]Value); ok {
+		var out []Value
+		for _, elem := range rList {
+			res, err := s.evalBin(BinE{Op: v.Op, L: litVal{V: l}, R: litVal{V: elem}})
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, res)
+		}
+		return out, nil
 	}
-	return nil, fmt.Errorf("unknown operator %q", v.Op)
+	if lfErr != nil {
+		return nil, lfErr
+	}
+	return nil, rfErr
 }
 
 func (s *Scope) attr(x Value, name string) (Value, error) {
@@ -665,8 +792,38 @@ func (s *Scope) attr(x Value, name string) (Value, error) {
 		return nil, fmt.Errorf("snapshot of %s has no field %q", v.Of, name)
 	case stackRegion:
 		return s.stackAttr(name)
+	case []Value:
+		if i, err := strconv.Atoi(name); err == nil {
+			if i < 0 || i >= len(v) {
+				return nil, fmt.Errorf("tuple index %d out of range", i)
+			}
+			return v[i], nil
+		}
+		switch name {
+		case "indices":
+			// Return the index domain 0..len(v) as a []Value of float64
+			out := make([]Value, len(v))
+			for i := range v {
+				out[i] = float64(i)
+			}
+			return out, nil
+		case "len":
+			return float64(len(v)), nil
+		}
+		return nil, fmt.Errorf("list has no attribute %q (did you mean .indices or .len?)", name)
 	case nil:
+		// nil.name: fall through to namespace check in AttrE eval (handled in Eval)
 		return nil, nil
+	case FamilyInstance:
+		// family[i].memberName — look up the member entity
+		memberName := familyMemberName(v.Family.Name, v.Idx, name)
+		if grp, ok := v.rt.Groups[memberName]; ok {
+			if len(grp.Items) == 1 {
+				return grp.Items[0], nil
+			}
+			return grp, nil
+		}
+		return nil, fmt.Errorf("family %s instance %d has no member %q", v.Family.Name, v.Idx, name)
 	}
 	return nil, fmt.Errorf("%T has no attributes", x)
 }
@@ -951,6 +1108,69 @@ func init() {
 			// a stack region; unresolved names degrade to the screen region
 			return stackRegion{}, nil
 		},
+		// sum(list) — sum of all elements
+		"sum": func(s *Scope, a []Value) (Value, error) {
+			if len(a) != 1 {
+				return nil, fmt.Errorf("sum(list) expects 1 arg")
+			}
+			list, ok := a[0].([]Value)
+			if !ok {
+				return nil, fmt.Errorf("sum: arg must be a list, got %T", a[0])
+			}
+			total := 0.0
+			for _, v := range list {
+				f, err := asFloat(v)
+				if err != nil {
+					return nil, fmt.Errorf("sum: %v", err)
+				}
+				total += f
+			}
+			return total, nil
+		},
+		// prod(list) — product of all elements
+		"prod": func(s *Scope, a []Value) (Value, error) {
+			if len(a) != 1 {
+				return nil, fmt.Errorf("prod(list) expects 1 arg")
+			}
+			list, ok := a[0].([]Value)
+			if !ok {
+				return nil, fmt.Errorf("prod: arg must be a list, got %T", a[0])
+			}
+			p := 1.0
+			for _, v := range list {
+				f, err := asFloat(v)
+				if err != nil {
+					return nil, fmt.Errorf("prod: %v", err)
+				}
+				p *= f
+			}
+			return p, nil
+		},
+		// pair_sum(list) — sum of all pairwise products (Vieta's c1 coefficient)
+		"pair_sum": func(s *Scope, a []Value) (Value, error) {
+			if len(a) != 1 {
+				return nil, fmt.Errorf("pair_sum(list) expects 1 arg")
+			}
+			list, ok := a[0].([]Value)
+			if !ok {
+				return nil, fmt.Errorf("pair_sum: arg must be a list, got %T", a[0])
+			}
+			floats := make([]float64, len(list))
+			for i, v := range list {
+				f, err := asFloat(v)
+				if err != nil {
+					return nil, fmt.Errorf("pair_sum: %v", err)
+				}
+				floats[i] = f
+			}
+			total := 0.0
+			for i := 0; i < len(floats); i++ {
+				for j := i + 1; j < len(floats); j++ {
+					total += floats[i] * floats[j]
+				}
+			}
+			return total, nil
+		},
 		// extern fn spiral(i, n) -> point: the Go-side stub for example 90.
 		"spiral": func(s *Scope, a []Value) (Value, error) {
 			if len(a) != 2 {
@@ -1066,14 +1286,17 @@ func partBox(p *PartState) (at Vec, w, h float64) {
 }
 
 func axesPoint(ax *Entity, x, y float64) Vec {
-	at := ax.fvec("at")
+	return axesLocalPoint(ax, x, y).Add(ax.fvec("at"))
+}
+
+func axesLocalPoint(ax *Entity, x, y float64) Vec {
 	xr := rangeOf(ax, "x_range", -7, 7)
 	yr := rangeOf(ax, "y_range", -4, 4)
 	w, h := 10.0, 6.0
 	cx, cy := (xr[0]+xr[1])/2, (yr[0]+yr[1])/2
 	sx := w / (xr[1] - xr[0])
 	sy := h / (yr[1] - yr[0])
-	return Vec{at[0] + (x-cx)*sx, at[1] + (y-cy)*sy, 0}
+	return Vec{(x - cx) * sx, (y - cy) * sy, 0}
 }
 
 func rangeOf(e *Entity, name string, lo, hi float64) [3]float64 {

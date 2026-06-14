@@ -20,5 +20,17 @@ class DynamicPointTween(Scene):
             )
         )
         self.add(source, target)
-        self.play(theta.animate.set_value(TAU), Transform(source, target), run_time=4, rate_func=linear)
+        start = source.get_center().copy()
+        self.play(
+            theta.animate.set_value(TAU),
+            UpdateFromAlphaFunc(
+                source,
+                lambda mob, alpha: mob.move_to(
+                    interpolate(start, target.get_center(), alpha)
+                ).set_color(interpolate_color(YELLOW, RED, alpha)),
+            ),
+            run_time=4,
+            rate_func=linear,
+        )
+        source.add_updater(lambda mob: mob.move_to(target.get_center()))
         self.play(theta.animate.set_value(1.5 * TAU), run_time=2, rate_func=linear)

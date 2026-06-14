@@ -650,7 +650,8 @@ func (r *Renderer) drawPlane(dc *gg.Context, c cam, e *Entity, tf Transform) {
 		for i := 0; i <= n; i++ {
 			t := float64(i) / n
 			p := Vec{lerp(p0[0], p1[0], t), lerp(p0[1], p1[1], t), 0}
-			pts = append(pts, gridPoint(rt, e, p).Add(at))
+			p = gridPoint(rt, e, p)
+			pts = append(pts, axesLocalPoint(e, p[0], p[1]).Add(at))
 		}
 		return pts
 	}

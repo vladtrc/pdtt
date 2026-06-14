@@ -7,6 +7,7 @@ package pdtt
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -23,9 +24,10 @@ type (
 	}
 )
 
-type IndexE struct { // I == nil means [*]
-	X Expr
-	I Expr
+type IndexE struct { // I == nil means [*] or [* as name]
+	X        Expr
+	I        Expr
+	BindName string // set when [* as name]; empty for plain [*] or indexed [expr]
 }
 type CallE struct {
 	Fn   Expr
@@ -34,6 +36,9 @@ type CallE struct {
 type BinE struct {
 	Op   string
 	L, R Expr
+}
+type RangeE struct {
+	Start, End Expr
 }
 type UnE struct {
 	Op string
@@ -51,6 +56,10 @@ type (
 type FoldE struct { // scan(init by col)
 	Init Expr
 	By   string
+}
+
+type SnapshotE struct { // snapshot expr — evaluates at declaration time and freezes
+	X Expr
 }
 
 type token struct {
@@ -74,11 +83,20 @@ func lexExpr(src string) ([]token, error) {
 		switch {
 		case c == ' ' || c == '\t':
 			i++
+		case c == '.' && i+1 < len(src) && src[i+1] >= '0' && src[i+1] <= '9' && tokenEndsValue(ts):
+			ts = append(ts, token{kind: "op", s: "."})
+			i++
 		case c >= '0' && c <= '9' || c == '.' && i+1 < len(src) && src[i+1] >= '0' && src[i+1] <= '9':
 			j := i
 			seenDot := false
 			for j < len(src) && (src[j] >= '0' && src[j] <= '9' || src[j] == '.' && !seenDot) {
+				if src[j] == '.' && j+1 < len(src) && src[j+1] == '.' {
+					break
+				}
 				if src[j] == '.' {
+					if j+1 >= len(src) || src[j+1] < '0' || src[j+1] > '9' {
+						break
+					}
 					seenDot = true
 				}
 				j++
@@ -116,7 +134,7 @@ func lexExpr(src string) ([]token, error) {
 		default:
 			if i+1 < len(src) {
 				two := src[i : i+2]
-				if two == "==" || two == "!=" || two == "<=" || two == ">=" {
+				if two == "==" || two == "!=" || two == "<=" || two == ">=" || two == ".." {
 					ts = append(ts, token{kind: "op", s: two})
 					i += 2
 					continue
@@ -131,6 +149,17 @@ func lexExpr(src string) ([]token, error) {
 		}
 	}
 	return ts, nil
+}
+
+func tokenEndsValue(ts []token) bool {
+	if len(ts) == 0 {
+		return false
+	}
+	last := ts[len(ts)-1]
+	if last.kind == "id" || last.kind == "num" || last.kind == "str" {
+		return true
+	}
+	return last.kind == "op" && (last.s == ")" || last.s == "]")
 }
 
 type exprParser struct {
@@ -179,7 +208,7 @@ func (p *exprParser) eatID(s string) bool {
 
 // cond ? then : else   (also accepts legacy: then if cond else elseExpr)
 func (p *exprParser) parseCond() (Expr, error) {
-	e, err := p.parseCmp()
+	e, err := p.parseRange()
 	if err != nil {
 		return nil, err
 	}
@@ -210,6 +239,21 @@ func (p *exprParser) parseCond() (Expr, error) {
 			return nil, err
 		}
 		return CondE{Then: e, Cond: cond, Else: els}, nil
+	}
+	return e, nil
+}
+
+func (p *exprParser) parseRange() (Expr, error) {
+	e, err := p.parseCmp()
+	if err != nil {
+		return nil, err
+	}
+	if p.eatOp("..") {
+		end, err := p.parseCmp()
+		if err != nil {
+			return nil, err
+		}
+		return RangeE{Start: e, End: end}, nil
 	}
 	return e, nil
 }
@@ -296,8 +340,11 @@ func (p *exprParser) parsePostfix() (Expr, error) {
 		switch {
 		case p.eatOp("."):
 			t := p.peek()
-			if t == nil || t.kind != "id" {
+			if t == nil || t.kind != "id" && t.kind != "num" {
 				return nil, fmt.Errorf("expected attribute name after `.`")
+			}
+			if t.kind == "num" && math.Trunc(t.num) != t.num {
+				return nil, fmt.Errorf("numeric attribute after `.` must be an integer")
 			}
 			p.pos++
 			e = AttrE{X: e, Name: t.s}
@@ -321,10 +368,20 @@ func (p *exprParser) parsePostfix() (Expr, error) {
 			e = CallE{Fn: e, Args: args}
 		case p.eatOp("["):
 			if p.eatOp("*") {
+				// [*] or [* as name]
+				bindName := ""
+				if p.eatID("as") {
+					t2 := p.peek()
+					if t2 == nil || t2.kind != "id" {
+						return nil, fmt.Errorf("expected identifier after `* as`")
+					}
+					bindName = t2.s
+					p.pos++
+				}
 				if !p.eatOp("]") {
 					return nil, fmt.Errorf("expected `]` after `[*`")
 				}
-				e = IndexE{X: e, I: nil}
+				e = IndexE{X: e, I: nil, BindName: bindName}
 				continue
 			}
 			idx, err := p.parseCond()
@@ -365,6 +422,14 @@ func (p *exprParser) parsePrimary() (Expr, error) {
 		return Str(t.s), nil
 	case "id":
 		p.pos++
+		if t.s == "snapshot" {
+			// snapshot expr — freeze the expression at evaluation time
+			x, err := p.parseUnary()
+			if err != nil {
+				return nil, err
+			}
+			return SnapshotE{X: x}, nil
+		}
 		return Ident(t.s), nil
 	case "op":
 		if t.s == "(" {
@@ -430,6 +495,9 @@ func exprDeps(e Expr, out map[string]bool) {
 	case BinE:
 		exprDeps(v.L, out)
 		exprDeps(v.R, out)
+	case RangeE:
+		exprDeps(v.Start, out)
+		exprDeps(v.End, out)
 	case UnE:
 		exprDeps(v.X, out)
 	case ListE:
@@ -445,5 +513,7 @@ func exprDeps(e Expr, out map[string]bool) {
 	case FoldE:
 		exprDeps(v.Init, out)
 		out[v.By] = true
+	case SnapshotE:
+		// snapshot is frozen — intentionally not a live dependency
 	}
 }

@@ -118,6 +118,33 @@ func (r WarpBlendRef) Get() Value  { return r.E.WarpBlend }
 func (r WarpBlendRef) Set(v Value) { f, _ := asFloat(v); r.E.WarpBlend = f }
 func (r WarpBlendRef) Key() string { return r.E.Name + ".__warp" }
 
+// ListElemRef tweens one element of a global list variable.
+type ListElemRef struct {
+	G   *GVar
+	Idx int
+}
+
+func (r ListElemRef) Get() Value {
+	if list, ok := r.G.Val.([]Value); ok && r.Idx >= 0 && r.Idx < len(list) {
+		return list[r.Idx]
+	}
+	return nil
+}
+func (r ListElemRef) Set(v Value) {
+	list, ok := r.G.Val.([]Value)
+	if !ok {
+		return
+	}
+	if r.Idx < 0 || r.Idx >= len(list) {
+		return
+	}
+	newList := make([]Value, len(list))
+	copy(newList, list)
+	newList[r.Idx] = v
+	r.G.Val = newList
+}
+func (r ListElemRef) Key() string { return fmt.Sprintf("%s[%d]", r.G.Name, r.Idx) }
+
 // Anim is one expanded row element: a window plus an apply function.
 type Anim struct {
 	T0, T1  float64
@@ -157,6 +184,7 @@ type Runtime struct {
 	SceneName string
 	Globals   map[string]*GVar
 	Groups    map[string]*Group
+	Families  map[string]*RecordFamily
 	Entities  []*Entity // render order = declaration order
 	Frame     *Entity
 	Anims     []*Anim
@@ -164,9 +192,10 @@ type Runtime struct {
 	Total     float64
 	T, Dt     float64
 
-	liveFields []fieldSlot
-	post       map[string]*PostAssign
-	warned     map[string]bool
+	liveFields  []fieldSlot
+	liveGlobals []*GVar // live global variables (colon-binding)
+	post        map[string]*PostAssign
+	warned      map[string]bool
 }
 
 type fieldSlot struct {
@@ -186,9 +215,10 @@ func (rt *Runtime) warnOnce(msg string) {
 
 func NewRuntime() *Runtime {
 	rt := &Runtime{
-		Globals: map[string]*GVar{},
-		Groups:  map[string]*Group{},
-		post:    map[string]*PostAssign{},
+		Globals:  map[string]*GVar{},
+		Groups:   map[string]*Group{},
+		Families: map[string]*RecordFamily{},
+		post:     map[string]*PostAssign{},
 	}
 	f := &Entity{Type: "frame", Name: "frame", Fields: map[string]*Field{}, Reveal: 1, Active: true, rt: rt}
 	f.field("at").Val = Vec{}
@@ -216,6 +246,47 @@ func (rt *Runtime) setPost(ref Ref, rhs Expr, binds map[string]Value, elemIdx, e
 		ElemIdx: elemIdx,
 		ElemN:   elemN,
 	}
+}
+
+func (rt *Runtime) globalHasWriter(name string) bool {
+	elemPrefix := name + "["
+	for _, a := range rt.Anims {
+		for _, ref := range a.Targets {
+			if ref == nil {
+				continue
+			}
+			key := ref.Key()
+			if key == name || strings.HasPrefix(key, elemPrefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (rt *Runtime) fieldHasWriter(key string) bool {
+	for _, a := range rt.Anims {
+		for _, ref := range a.Targets {
+			if ref != nil && ref.Key() == key {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (rt *Runtime) fieldHasActiveWriter(key string, t float64) bool {
+	for _, a := range rt.Anims {
+		if t+1e-9 < a.T0 || t > a.T1+1e-9 {
+			continue
+		}
+		for _, ref := range a.Targets {
+			if ref != nil && ref.Key() == key {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func evalTweenGoal(rt *Runtime, rhs Expr, binds map[string]Value, elemIdx, elemN int, cur Value) (Value, error) {
@@ -250,6 +321,10 @@ func Compile(stmts []Stmt) (*Runtime, error) {
 			}
 		case CaptureStmt:
 			if err := rt.addCapture(v, cursor); err != nil {
+				return nil, err
+			}
+		case FamilyStmt:
+			if err := rt.addFamily(v, scope); err != nil {
 				return nil, err
 			}
 		case RecordStmt:
@@ -475,6 +550,20 @@ func (rt *Runtime) addCapture(v CaptureStmt, t float64) error {
 		return fmt.Errorf("line %d: capture %s redefined", v.Line, v.Name)
 	}
 	rt.Globals[v.Name] = g
+	if v.Live {
+		// Live colon-binding: the global is re-evaluated each frame.
+		// Evaluate immediately so downstream declarations (like family domains) can use this value.
+		g.Live = true
+		g.Def = v.E
+		s := &Scope{rt: rt}
+		val, err := s.Eval(v.E)
+		if err != nil {
+			return fmt.Errorf("line %d: live global %s: %v", v.Line, v.Name, err)
+		}
+		g.Val = val
+		rt.liveGlobals = append(rt.liveGlobals, g)
+		return nil
+	}
 	expr := v.E
 	rt.Events = append(rt.Events, &Event{T: t, Line: v.Line, Run: func(rt *Runtime) error {
 		s := &Scope{rt: rt}
@@ -482,16 +571,164 @@ func (rt *Runtime) addCapture(v CaptureStmt, t float64) error {
 		if err != nil {
 			return fmt.Errorf("line %d: capture %s: %v", v.Line, v.Name, err)
 		}
-		if e, ok := val.(*Entity); ok { // snapshot a record
-			snap := Snapshot{Of: e.Name, Fields: map[string]Value{}}
-			for name, f := range e.Fields {
-				snap.Fields[name] = f.Val
-			}
-			val = snap
-		}
+		val = snapshotValue(val)
 		g.Val = val
 		return nil
 	}})
+	return nil
+}
+
+// addFamily expands a domain-binder family declaration into individual member
+// entities and registers the family structure.
+func (rt *Runtime) addFamily(v FamilyStmt, scope *Scope) error {
+	// Evaluate the domain expression to get a list of indices
+	domainVal, err := scope.Eval(v.DomainE)
+	if err != nil {
+		return fmt.Errorf("line %d: family %s domain: %v", v.Line, v.Name, err)
+	}
+	var indices []Value
+	switch x := domainVal.(type) {
+	case []Value:
+		indices = x
+	default:
+		return fmt.Errorf("line %d: family domain must evaluate to a list, got %T", v.Line, domainVal)
+	}
+
+	// Build member name list
+	var memberNames []string
+	for _, mem := range v.Members {
+		memberNames = append(memberNames, mem.Name)
+	}
+
+	fam := &RecordFamily{
+		Name:     v.Name,
+		N:        len(indices),
+		KeyToPos: map[int]int{},
+		Members:  memberNames,
+	}
+	rt.Families[v.Name] = fam
+
+	// Create a top-level Group for the family whose Items are synthetic proxy
+	// entities (one per instance). These are used for broadcast `roots[*]`.
+	famGroup := &Group{Name: v.Name}
+
+	for idxPos, idxVal := range indices {
+		idxFloat, err := asFloat(idxVal)
+		if err != nil {
+			return fmt.Errorf("line %d: family domain element %d: %v", v.Line, idxPos, err)
+		}
+		if math.Trunc(idxFloat) != idxFloat {
+			return fmt.Errorf("line %d: family domain element %d must be an integer, got %v", v.Line, idxPos, idxFloat)
+		}
+		bindVal := idxFloat
+		actualIdx := int(bindVal)
+		if _, exists := fam.KeyToPos[actualIdx]; exists {
+			return fmt.Errorf("line %d: family domain contains duplicate key %d", v.Line, actualIdx)
+		}
+		fam.Keys = append(fam.Keys, actualIdx)
+		fam.KeyToPos[actualIdx] = idxPos
+
+		// The ItVal for this instance carries the bind variable in Cols.
+		// We'll add sibling member references to Cols after all members are created.
+		cols := map[string]Value{
+			v.BindVar: bindVal,
+		}
+		itVal := ItVal{
+			Val:  idxVal,
+			I:    idxPos,
+			N:    len(indices),
+			Cols: cols,
+		}
+
+		// Create a proxy entity for this instance in the family group
+		proxy := &Entity{
+			Type:   "__family_proxy__",
+			Name:   v.Name,
+			Idx:    idxPos,
+			N:      len(indices),
+			Fields: map[string]*Field{},
+			Reveal: 1,
+			rt:     rt,
+		}
+		proxy.It = itVal
+		famGroup.Items = append(famGroup.Items, proxy)
+
+		// Create all member entities for this instance first
+		for _, mem := range v.Members {
+			entityName := familyMemberName(v.Name, actualIdx, mem.Name)
+			memberRS := RecordStmt{
+				Type:   mem.Type,
+				Name:   entityName,
+				Fields: mem.Fields,
+				Line:   mem.Line,
+			}
+			if err := rt.addRecordWithIt(memberRS, itVal); err != nil {
+				return err
+			}
+		}
+
+		// Now populate sibling references in Cols so member field expressions
+		// can reference each other by short name (e.g. `to: mark.at`).
+		for _, mem := range v.Members {
+			entityName := familyMemberName(v.Name, actualIdx, mem.Name)
+			if grp, ok := rt.Groups[entityName]; ok && len(grp.Items) == 1 {
+				cols[mem.Name] = grp.Items[0]
+			}
+		}
+		// Also update the proxy's It to have the sibling refs
+		proxy.It = ItVal{Val: idxVal, I: idxPos, N: len(indices), Cols: cols}
+		// Update all member entities' It as well
+		for _, mem := range v.Members {
+			entityName := familyMemberName(v.Name, actualIdx, mem.Name)
+			if grp, ok := rt.Groups[entityName]; ok {
+				for _, e := range grp.Items {
+					e.It = ItVal{Val: idxVal, I: idxPos, N: len(indices), Cols: cols}
+				}
+			}
+		}
+	}
+
+	rt.Groups[v.Name] = famGroup
+	return nil
+}
+
+// addRecordWithIt creates a single entity with the given ItVal pre-set.
+// This is used by addFamily to create member entities whose field expressions
+// reference the family's bind variable (stored in itVal.Cols).
+func (rt *Runtime) addRecordWithIt(v RecordStmt, itVal ItVal) error {
+	if _, exists := rt.Groups[v.Name]; exists {
+		return nil // already created (shouldn't happen in normal flow)
+	}
+	e := &Entity{
+		Type:   v.Type,
+		Name:   v.Name,
+		Idx:    0,
+		N:      1,
+		Fields: map[string]*Field{},
+		Reveal: 1,
+		rt:     rt,
+	}
+	e.It = itVal
+
+	for _, fd := range v.Fields {
+		if fd.Name == "parts" {
+			if list, ok := fd.E.(ListE); ok {
+				for _, item := range list.Items {
+					if id, ok := item.(Ident); ok {
+						e.Parts = append(e.Parts, &PartState{Name: string(id), E: e, Opacity: 1})
+					}
+				}
+			}
+			continue
+		}
+		f := e.field(fd.Name)
+		f.Def = fd.E
+		f.Rate = fd.Rate
+	}
+
+	grp := &Group{Name: v.Name, Items: []*Entity{e}}
+	rt.Groups[v.Name] = grp
+	rt.Entities = append(rt.Entities, e)
 	return nil
 }
 
@@ -661,45 +898,470 @@ func findStar(e Expr) bool {
 	return false
 }
 
-// resolveStarBase returns (group entities | parts) under the [*].
-func (rt *Runtime) resolveStarBase(e Expr, binds map[string]Value) (ents []*Entity, parts []*PartState, err error) {
+// resolveStarBase returns (group entities | parts) under the [*] and the
+// BindName if the star was `[* as name]`.
+func (rt *Runtime) resolveStarBase(e Expr, binds map[string]Value) (ents []*Entity, parts []*PartState, bindName string, err error) {
 	idx, ok := e.(IndexE)
 	if !ok || idx.I != nil {
-		return nil, nil, fmt.Errorf("unsupported broadcast shape")
+		return nil, nil, "", fmt.Errorf("unsupported broadcast shape")
 	}
+	bindName = idx.BindName
 	s := &Scope{rt: rt, binds: binds}
 	base, err := s.Eval(idx.X)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	switch v := base.(type) {
 	case *Group:
-		return v.Items, nil, nil
+		return v.Items, nil, bindName, nil
 	case *Entity:
-		return []*Entity{v}, nil, nil
+		return []*Entity{v}, nil, bindName, nil
 	case partsRef:
-		return nil, v.E.Parts, nil
+		return nil, v.E.Parts, bindName, nil
+	case []Value:
+		// Broadcasting over a plain list (e.g. `val[* as i]`)
+		// Create synthetic entities that carry the list elements
+		// The list items are not entities — we handle this specially in expandArrow
+		return nil, nil, bindName, fmt.Errorf("broadcast over list — handle via expandListBroadcast")
 	}
-	return nil, nil, fmt.Errorf("cannot broadcast over %T", base)
+	return nil, nil, "", fmt.Errorf("cannot broadcast over %T", base)
 }
 
 // splitStarPath splits LHS path `base[*].rest...` into the starred base expr
 // and the trailing attribute names.
-func splitStarPath(e Expr) (starBase Expr, trail []string, ok bool) {
+func splitStarPath(e Expr) (starBase Expr, trail []string, bindName string, ok bool) {
 	switch v := e.(type) {
 	case IndexE:
 		if v.I == nil {
-			return v, nil, true
+			return v, nil, v.BindName, true
 		}
-		return nil, nil, false
+		return nil, nil, "", false
 	case AttrE:
-		base, trail, ok := splitStarPath(v.X)
+		base, trail, bn, ok := splitStarPath(v.X)
 		if !ok {
-			return nil, nil, false
+			return nil, nil, "", false
 		}
-		return base, append(trail, v.Name), true
+		return base, append(trail, v.Name), bn, true
 	}
-	return nil, nil, false
+	return nil, nil, "", false
+}
+
+type exprVariant struct {
+	expr  Expr
+	binds map[string]Value
+}
+
+type starChoice struct {
+	index Value
+	bind  Value
+	it    ItVal
+}
+
+func copyBinds(binds map[string]Value) map[string]Value {
+	cp := map[string]Value{}
+	for k, v := range binds {
+		cp[k] = v
+	}
+	return cp
+}
+
+func (rt *Runtime) starChoices(base Value) ([]starChoice, error) {
+	switch v := base.(type) {
+	case []Value:
+		out := make([]starChoice, len(v))
+		for i := range v {
+			idx := float64(i)
+			out[i] = starChoice{
+				index: idx,
+				bind:  idx,
+				it:    ItVal{Val: v[i], I: i, N: len(v)},
+			}
+		}
+		return out, nil
+	case *Group:
+		if fam, ok := rt.Families[v.Name]; ok {
+			out := make([]starChoice, len(fam.Keys))
+			for i, key := range fam.Keys {
+				idx := float64(key)
+				it := ItVal{Val: v.Items[i], I: i, N: len(v.Items)}
+				if existing, ok := v.Items[i].It.(ItVal); ok {
+					it = existing
+				}
+				out[i] = starChoice{index: idx, bind: idx, it: it}
+			}
+			return out, nil
+		}
+		out := make([]starChoice, len(v.Items))
+		for i := range v.Items {
+			idx := float64(i)
+			it := ItVal{Val: firstNonNil(v.Items[i].It, v.Items[i]), I: i, N: len(v.Items)}
+			if existing, ok := v.Items[i].It.(ItVal); ok {
+				it = existing
+			}
+			out[i] = starChoice{index: idx, bind: idx, it: it}
+		}
+		return out, nil
+	case *Entity:
+		it := ItVal{Val: firstNonNil(v.It, v), I: 0, N: 1}
+		if existing, ok := v.It.(ItVal); ok {
+			it = existing
+		}
+		return []starChoice{{index: 0.0, bind: 0.0, it: it}}, nil
+	case partsRef:
+		out := make([]starChoice, len(v.E.Parts))
+		for i := range v.E.Parts {
+			idx := float64(i)
+			out[i] = starChoice{
+				index: idx,
+				bind:  idx,
+				it:    ItVal{Val: v.E.Parts[i], I: i, N: len(v.E.Parts)},
+			}
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("cannot broadcast over %T", base)
+}
+
+func (rt *Runtime) expandExprStars(e Expr, binds map[string]Value) ([]exprVariant, error) {
+	switch v := e.(type) {
+	case nil, Num, Str, Ident, litVal:
+		return []exprVariant{{expr: e, binds: copyBinds(binds)}}, nil
+	case AttrE:
+		xs, err := rt.expandExprStars(v.X, binds)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]exprVariant, 0, len(xs))
+		for _, x := range xs {
+			out = append(out, exprVariant{expr: AttrE{X: x.expr, Name: v.Name}, binds: x.binds})
+		}
+		return out, nil
+	case IndexE:
+		xs, err := rt.expandExprStars(v.X, binds)
+		if err != nil {
+			return nil, err
+		}
+		if v.I == nil {
+			var out []exprVariant
+			for _, x := range xs {
+				base, err := (&Scope{rt: rt, binds: x.binds}).Eval(x.expr)
+				if err != nil {
+					return nil, err
+				}
+				choices, err := rt.starChoices(base)
+				if err != nil {
+					return nil, err
+				}
+				for _, choice := range choices {
+					nb := copyBinds(x.binds)
+					count := 0
+					if n, ok := nb["__star_count"]; ok {
+						if f, err := asFloat(n); err == nil {
+							count = int(f)
+						}
+					}
+					nb["__star_count"] = float64(count + 1)
+					if count < len("ijkl") {
+						nb[string("ijkl"[count])] = choice.bind
+					}
+					switch current := nb["it"].(type) {
+					case nil:
+						nb["it"] = choice.it
+					case []Value:
+						nb["it"] = append(append([]Value(nil), current...), choice.it)
+					default:
+						nb["it"] = []Value{current, choice.it}
+					}
+					if v.BindName != "" {
+						nb[v.BindName] = choice.bind
+					}
+					out = append(out, exprVariant{
+						expr:  IndexE{X: x.expr, I: litVal{V: choice.index}},
+						binds: nb,
+					})
+				}
+			}
+			return out, nil
+		}
+		var out []exprVariant
+		for _, x := range xs {
+			is, err := rt.expandExprStars(v.I, x.binds)
+			if err != nil {
+				return nil, err
+			}
+			for _, idx := range is {
+				out = append(out, exprVariant{expr: IndexE{X: x.expr, I: idx.expr}, binds: idx.binds})
+			}
+		}
+		return out, nil
+	case CallE:
+		fns, err := rt.expandExprStars(v.Fn, binds)
+		if err != nil {
+			return nil, err
+		}
+		var expandArgs func(int, map[string]Value, []Expr) ([]exprVariant, error)
+		expandArgs = func(i int, cur map[string]Value, args []Expr) ([]exprVariant, error) {
+			if i == len(v.Args) {
+				cp := make([]Expr, len(args))
+				copy(cp, args)
+				return []exprVariant{{expr: ListE{Items: cp}, binds: copyBinds(cur)}}, nil
+			}
+			vs, err := rt.expandExprStars(v.Args[i], cur)
+			if err != nil {
+				return nil, err
+			}
+			var out []exprVariant
+			for _, av := range vs {
+				next := append(args, av.expr)
+				tail, err := expandArgs(i+1, av.binds, next)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, tail...)
+			}
+			return out, nil
+		}
+		var out []exprVariant
+		for _, fn := range fns {
+			args, err := expandArgs(0, fn.binds, nil)
+			if err != nil {
+				return nil, err
+			}
+			for _, av := range args {
+				list := av.expr.(ListE)
+				out = append(out, exprVariant{expr: CallE{Fn: fn.expr, Args: list.Items}, binds: av.binds})
+			}
+		}
+		return out, nil
+	case BinE:
+		ls, err := rt.expandExprStars(v.L, binds)
+		if err != nil {
+			return nil, err
+		}
+		var out []exprVariant
+		for _, l := range ls {
+			rs, err := rt.expandExprStars(v.R, l.binds)
+			if err != nil {
+				return nil, err
+			}
+			for _, r := range rs {
+				out = append(out, exprVariant{expr: BinE{Op: v.Op, L: l.expr, R: r.expr}, binds: r.binds})
+			}
+		}
+		return out, nil
+	case RangeE:
+		ss, err := rt.expandExprStars(v.Start, binds)
+		if err != nil {
+			return nil, err
+		}
+		var out []exprVariant
+		for _, s := range ss {
+			es, err := rt.expandExprStars(v.End, s.binds)
+			if err != nil {
+				return nil, err
+			}
+			for _, e := range es {
+				out = append(out, exprVariant{expr: RangeE{Start: s.expr, End: e.expr}, binds: e.binds})
+			}
+		}
+		return out, nil
+	case UnE:
+		xs, err := rt.expandExprStars(v.X, binds)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]exprVariant, 0, len(xs))
+		for _, x := range xs {
+			out = append(out, exprVariant{expr: UnE{Op: v.Op, X: x.expr}, binds: x.binds})
+		}
+		return out, nil
+	case ListE:
+		var expandItems func(int, map[string]Value, []Expr) ([]exprVariant, error)
+		expandItems = func(i int, cur map[string]Value, items []Expr) ([]exprVariant, error) {
+			if i == len(v.Items) {
+				cp := make([]Expr, len(items))
+				copy(cp, items)
+				return []exprVariant{{expr: ListE{Items: cp}, binds: copyBinds(cur)}}, nil
+			}
+			vs, err := rt.expandExprStars(v.Items[i], cur)
+			if err != nil {
+				return nil, err
+			}
+			var out []exprVariant
+			for _, iv := range vs {
+				next := append(items, iv.expr)
+				tail, err := expandItems(i+1, iv.binds, next)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, tail...)
+			}
+			return out, nil
+		}
+		return expandItems(0, binds, nil)
+	case CondE:
+		cs, err := rt.expandExprStars(v.Cond, binds)
+		if err != nil {
+			return nil, err
+		}
+		var out []exprVariant
+		for _, c := range cs {
+			ts, err := rt.expandExprStars(v.Then, c.binds)
+			if err != nil {
+				return nil, err
+			}
+			for _, tv := range ts {
+				es, err := rt.expandExprStars(v.Else, tv.binds)
+				if err != nil {
+					return nil, err
+				}
+				for _, ev := range es {
+					out = append(out, exprVariant{expr: CondE{Cond: c.expr, Then: tv.expr, Else: ev.expr}, binds: ev.binds})
+				}
+			}
+		}
+		return out, nil
+	case AlphaE:
+		xs, err := rt.expandExprStars(v.X, binds)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]exprVariant, 0, len(xs))
+		for _, x := range xs {
+			out = append(out, exprVariant{expr: AlphaE{X: x.expr, Pct: v.Pct}, binds: x.binds})
+		}
+		return out, nil
+	case SnapshotE:
+		xs, err := rt.expandExprStars(v.X, binds)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]exprVariant, 0, len(xs))
+		for _, x := range xs {
+			out = append(out, exprVariant{expr: SnapshotE{X: x.expr}, binds: x.binds})
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("cannot expand broadcast in %T", e)
+}
+
+func (rt *Runtime) expandRowVariants(lhs, rhs Expr, binds map[string]Value) ([]struct{ lhs, rhs exprVariant }, error) {
+	lhsVars, err := rt.expandExprStars(lhs, binds)
+	if err != nil {
+		return nil, err
+	}
+	var out []struct{ lhs, rhs exprVariant }
+	for _, lv := range lhsVars {
+		rhsVars, err := rt.expandExprStars(rhs, lv.binds)
+		if err != nil {
+			return nil, err
+		}
+		for _, rv := range rhsVars {
+			out = append(out, struct{ lhs, rhs exprVariant }{lhs: lv, rhs: rv})
+		}
+	}
+	return out, nil
+}
+
+func checkRowTargetConflicts(line int, seen map[string]bool, targets []Ref) error {
+	for _, ref := range targets {
+		if ref == nil {
+			continue
+		}
+		key := ref.Key()
+		if seen[key] {
+			return fmt.Errorf("line %d: broadcast expansion writes %s more than once in the same row", line, key)
+		}
+		seen[key] = true
+	}
+	return nil
+}
+
+func (rt *Runtime) checkBoundExpr(e Expr, binds map[string]Value) error {
+	var walk func(Expr) error
+	walk = func(e Expr) error {
+		switch v := e.(type) {
+		case nil, Num, Str, litVal:
+			return nil
+		case Ident:
+			name := string(v)
+			if _, ok := binds[name]; ok {
+				return nil
+			}
+			if _, ok := rt.Globals[name]; ok {
+				return nil
+			}
+			if _, ok := rt.Groups[name]; ok {
+				return nil
+			}
+			if _, ok := namedColors[name]; ok {
+				return nil
+			}
+			if _, ok := namedVecs[name]; ok {
+				return nil
+			}
+			if _, ok := namedNums[name]; ok {
+				return nil
+			}
+			if _, ok := namespaces[name]; ok {
+				return nil
+			}
+			if _, ok := builtins[name]; ok {
+				return nil
+			}
+			return fmt.Errorf("unbound name %q", name)
+		case AttrE:
+			return walk(v.X)
+		case IndexE:
+			if err := walk(v.X); err != nil {
+				return err
+			}
+			if v.I != nil {
+				return walk(v.I)
+			}
+		case CallE:
+			if err := walk(v.Fn); err != nil {
+				return err
+			}
+			for _, a := range v.Args {
+				if err := walk(a); err != nil {
+					return err
+				}
+			}
+		case BinE:
+			if err := walk(v.L); err != nil {
+				return err
+			}
+			return walk(v.R)
+		case RangeE:
+			if err := walk(v.Start); err != nil {
+				return err
+			}
+			return walk(v.End)
+		case UnE:
+			return walk(v.X)
+		case ListE:
+			for _, it := range v.Items {
+				if err := walk(it); err != nil {
+					return err
+				}
+			}
+		case CondE:
+			if err := walk(v.Cond); err != nil {
+				return err
+			}
+			if err := walk(v.Then); err != nil {
+				return err
+			}
+			return walk(v.Else)
+		case AlphaE:
+			return walk(v.X)
+		case SnapshotE:
+			return walk(v.X)
+		}
+		return nil
+	}
+	return walk(e)
 }
 
 func (rt *Runtime) expandRow(row Row, w winState, start, dur float64, binds map[string]Value) error {
@@ -723,10 +1385,14 @@ func (rt *Runtime) expandRow(row Row, w winState, start, dur float64, binds map[
 		return &Anim{T0: t0, T1: t1, Ease: ease, Binds: merged, Line: row.Line}
 	}
 
-	if row.Op.Kind == "enter" {
+	switch row.Op.Kind {
+	case "enter":
 		return rt.expandEnter(row, w, mkAnim)
-	}
-	if row.Op.Kind != "arrow" {
+	case "enter_broadcast":
+		return rt.expandEnterBroadcast(row, w, mkAnim)
+	case "arrow":
+		// handled below
+	default:
 		return fmt.Errorf("line %d: unsupported row operation %q", row.Line, row.Op.Kind)
 	}
 	transition := rowTransition(row)
@@ -764,11 +1430,12 @@ func (rt *Runtime) expandVerbSimple(row Row, w winState, mk func(from, to float6
 
 func (rt *Runtime) verbSubjects(lhs Expr, binds map[string]Value) ([]*Entity, []*PartState, error) {
 	if findStar(lhs) {
-		base, trail, ok := splitStarPath(lhs)
+		base, trail, _, ok := splitStarPath(lhs)
 		if !ok || len(trail) > 0 {
 			return nil, nil, fmt.Errorf("unsupported broadcast verb subject")
 		}
-		return rt.starList(base, binds)
+		ents, parts, _, err := rt.resolveStarBase(base, binds)
+		return ents, parts, err
 	}
 	s := &Scope{rt: rt, binds: binds}
 	v, err := s.Eval(lhs)
@@ -786,77 +1453,117 @@ func (rt *Runtime) verbSubjects(lhs Expr, binds map[string]Value) ([]*Entity, []
 	return nil, nil, fmt.Errorf("verb subject is %T", v)
 }
 
-func (rt *Runtime) starList(starBase Expr, binds map[string]Value) ([]*Entity, []*PartState, error) {
-	ents, parts, err := rt.resolveStarBase(starBase, binds)
-	return ents, parts, err
-}
-
 func (rt *Runtime) expandArrow(row Row, w winState, mk func(from, to float64, eb map[string]Value) *Anim, transition string) error {
 	lhs, rhs := row.Op.LHS, row.Op.RHS
 	binds := mk(0, 0, nil).Binds
 	_ = transition
 
-	if !findStar(lhs) {
-		ref, special, err := rt.resolveRef(lhs, binds)
-		if err != nil {
-			return fmt.Errorf("line %d: %v", row.Line, err)
-		}
-		a := mk(w.from, w.to, nil)
-		switch special {
-		case "record":
-			rt.fillRecordArrow(a, lhs, rhs, binds)
-		case "warp":
-			rt.fillWarpArrow(a, ref)
-		default:
-			fillTween(a, ref, rhs, -1, 0)
-		}
-		rt.Anims = append(rt.Anims, a)
-		return nil
-	}
-
-	base, trail, ok := splitStarPath(lhs)
-	if !ok {
-		return fmt.Errorf("line %d: unsupported broadcast path", row.Line)
-	}
-	ents, parts, err := rt.starList(base, binds)
+	variants, err := rt.expandRowVariants(lhs, rhs, binds)
 	if err != nil {
 		return fmt.Errorf("line %d: %v", row.Line, err)
 	}
-	n := len(ents) + len(parts)
-	mkElem := func(k int, it ItVal) (*Anim, error) {
-		from := w.from + float64(k)*w.stagger
-		return mk(from, w.to, map[string]Value{"it": it}), nil
-	}
-	for k, e := range ents {
-		it := ItVal{Val: firstNonNil(e.It, e), I: k, N: n}
-		if iv, ok := e.It.(ItVal); ok {
-			it = iv
+	seenTargets := map[string]bool{}
+	for k, variant := range variants {
+		if err := rt.checkBoundExpr(variant.rhs.expr, variant.rhs.binds); err != nil {
+			return fmt.Errorf("line %d: %v", row.Line, err)
 		}
-		a, _ := mkElem(k, it)
-		ref, err := refForTrail(e, trail)
+		ref, special, err := rt.resolveRef(variant.lhs.expr, variant.rhs.binds)
 		if err != nil {
 			return fmt.Errorf("line %d: %v", row.Line, err)
 		}
-		fillTween(a, ref, rhs, k, n)
+		from := w.from + float64(k)*w.stagger
+		a := mk(from, w.to, variant.rhs.binds)
+		switch special {
+		case "record":
+			rt.fillRecordArrow(a, variant.lhs.expr, variant.rhs.expr, variant.rhs.binds)
+		case "warp":
+			rt.fillWarpArrow(a, ref)
+		default:
+			fillTween(a, ref, variant.rhs.expr, -1, 0)
+		}
+		if err := checkRowTargetConflicts(row.Line, seenTargets, a.Targets); err != nil {
+			return err
+		}
 		rt.Anims = append(rt.Anims, a)
 	}
-	for k, p := range parts {
-		it := ItVal{Val: p, I: k, N: n}
-		a, _ := mkElem(k, it)
-		var ref Ref
-		attr := ""
-		if len(trail) > 0 {
-			attr = trail[len(trail)-1]
+	return nil
+}
+
+// resolveTrail resolves a multi-hop attribute path starting from entity e.
+// For family proxy entities, the first trail element is a member name.
+func (rt *Runtime) resolveTrail(e *Entity, trail []string, binds map[string]Value) (Ref, error) {
+	if e.Type == "__family_proxy__" && len(trail) >= 1 {
+		// First trail element: member name
+		memberName := familyMemberName(e.Name, int(e.Idx), trail[0])
+		// The actual entity index in the family comes from the proxy's bind var
+		if itv, ok := e.It.(ItVal); ok {
+			// Find the actual index from Cols or use Idx
+			actualIdx := e.Idx
+			for _, bv := range itv.Cols {
+				if f, err := asFloat(bv); err == nil {
+					actualIdx = int(f)
+					break
+				}
+			}
+			memberName = familyMemberName(e.Name, actualIdx, trail[0])
 		}
-		switch attr {
-		case "color":
-			ref = PartColorRef{P: p}
-		case "opacity":
-			ref = PartOpacityRef{P: p}
-		default:
-			return fmt.Errorf("line %d: parts broadcast supports .color/.opacity, got %q", row.Line, attr)
+		// Look up the member entity
+		// Also check binds for a named star binder to get the correct index
+		if grp, ok := rt.Groups[memberName]; ok && len(grp.Items) == 1 {
+			memberEntity := grp.Items[0]
+			remainingTrail := trail[1:]
+			if len(remainingTrail) == 0 {
+				// The member entity itself — not a valid field ref
+				return nil, fmt.Errorf("trail resolves to entity, not a field")
+			}
+			return refForTrail(memberEntity, remainingTrail)
 		}
-		fillTween(a, ref, rhs, k, n)
+		return nil, fmt.Errorf("family member %q not found", memberName)
+	}
+	return refForTrail(e, trail)
+}
+
+// expandListBroadcast handles `val[* as i] -> rhsExpr` where val is a list.
+// Each element val[i] is tweened to rhsExpr[i] (or the RHS evaluated with i bound).
+func (rt *Runtime) expandListBroadcast(row Row, w winState, mk func(from, to float64, eb map[string]Value) *Anim, listExpr Expr, list []Value, bindName string, trail []string, rhs Expr) error {
+	for k := range list {
+		// Build the LHS ref: the field/global for list[k]
+		// `val[k]` — we need a ref to the k-th element of the global `val`
+		// Currently globals hold a []Value — we need a ListElemRef
+		// Find the global that holds this list
+		lhsIdxExpr := IndexE{X: listExpr, I: Num(float64(k))}
+		binds := mk(0, 0, nil).Binds
+		extraBinds := map[string]Value{}
+		if bindName != "" {
+			extraBinds[bindName] = float64(k)
+		}
+		allBinds := map[string]Value{}
+		for bk, bv := range binds {
+			allBinds[bk] = bv
+		}
+		for bk, bv := range extraBinds {
+			allBinds[bk] = bv
+		}
+		ref, special, err := rt.resolveRef(lhsIdxExpr, allBinds)
+		if err != nil || special != "" {
+			// Build a ListElemRef instead
+			varName := ""
+			if id, ok := listExpr.(Ident); ok {
+				varName = string(id)
+			}
+			if varName == "" {
+				return fmt.Errorf("line %d: list broadcast LHS must be a simple identifier", row.Line)
+			}
+			g, ok := rt.Globals[varName]
+			if !ok {
+				return fmt.Errorf("line %d: unknown global %q for list broadcast", row.Line, varName)
+			}
+			ref = ListElemRef{G: g, Idx: k}
+		}
+		from := w.from + float64(k)*w.stagger
+		a := mk(from, w.to, allBinds)
+		_ = trail
+		fillTween(a, ref, rhs, -1, 0)
 		rt.Anims = append(rt.Anims, a)
 	}
 	return nil
@@ -902,6 +1609,76 @@ func (rt *Runtime) expandEnter(row Row, w winState, mk func(from, to float64, eb
 			f.Live = false
 			f.Frozen = true
 			a := mk(w.from, w.to, nil)
+			fillTween(a, FieldRef{E: e, F: f}, goal, -1, 0)
+			prevStart := a.Start
+			a.Start = func(a *Anim, rt *Runtime) error {
+				e.Active = true
+				if prevStart != nil {
+					return prevStart(a, rt)
+				}
+				return nil
+			}
+			rt.Anims = append(rt.Anims, a)
+		}
+	}
+	return nil
+}
+
+// expandEnterBroadcast handles `roots[* as i].mark{opacity: 0} -> roots[i].mark`
+// — a broadcast enter tween over family members.
+func (rt *Runtime) expandEnterBroadcast(row Row, w winState, mk func(from, to float64, eb map[string]Value) *Anim) error {
+	lhsExpr := row.Op.LHS // e.g. AttrE{X: IndexE{X: Ident("roots"), I:nil, BindName:"i"}, Name: "mark"}
+	binds := mk(0, 0, nil).Binds
+	variants, err := rt.expandRowVariants(lhsExpr, row.Op.RHS, binds)
+	if err != nil {
+		return fmt.Errorf("line %d: %v", row.Line, err)
+	}
+	seenTargets := map[string]bool{}
+	for k, variant := range variants {
+		s := &Scope{rt: rt, binds: variant.rhs.binds}
+		lv, err := s.Eval(variant.lhs.expr)
+		if err != nil {
+			return fmt.Errorf("line %d: enter_broadcast: %v", row.Line, err)
+		}
+		e, ok := lv.(*Entity)
+		if !ok {
+			return fmt.Errorf("line %d: enter_broadcast target is %T", row.Line, lv)
+		}
+		rv, err := s.Eval(variant.rhs.expr)
+		if err != nil {
+			return fmt.Errorf("line %d: enter_broadcast RHS: %v", row.Line, err)
+		}
+		rhsEntity, ok := rv.(*Entity)
+		if !ok || rhsEntity != e {
+			return fmt.Errorf("line %d: object update tween is a self-transition; expanded sides refer to different objects", row.Line)
+		}
+		if err := rt.checkBoundExpr(variant.rhs.expr, variant.rhs.binds); err != nil {
+			return fmt.Errorf("line %d: %v", row.Line, err)
+		}
+		from := w.from + float64(k)*w.stagger
+		for _, ov := range row.Op.Overrides {
+			if err := rt.checkBoundExpr(ov.Val, variant.rhs.binds); err != nil {
+				return fmt.Errorf("line %d: %v", row.Line, err)
+			}
+			f := e.field(ov.Name)
+			if err := checkRowTargetConflicts(row.Line, seenTargets, []Ref{FieldRef{E: e, F: f}}); err != nil {
+				return err
+			}
+			var goal Expr
+			if f.Def != nil {
+				goal = f.Def
+			} else {
+				goal = litVal{V: f.Val}
+			}
+			pv, err2 := s.Eval(ov.Val)
+			if err2 != nil {
+				return fmt.Errorf("line %d: %v", row.Line, err2)
+			}
+			f.Val = coerceField(f.Name, pv)
+			f.Def = nil
+			f.Live = false
+			f.Frozen = true
+			a := mk(from, w.to, variant.rhs.binds)
 			fillTween(a, FieldRef{E: e, F: f}, goal, -1, 0)
 			prevStart := a.Start
 			a.Start = func(a *Anim, rt *Runtime) error {
@@ -964,9 +1741,29 @@ func (rt *Runtime) resolveRef(lhs Expr, binds map[string]Value) (Ref, string, er
 			case "opacity":
 				return PartOpacityRef{P: b}, "", nil
 			}
+		case FamilyInstance:
+			// e.g. roots[i].mark — not valid as a tween target without a field
+			return nil, "", fmt.Errorf("use `roots[i].%s.fieldname` to tween a field", v.Name)
 		}
 		return nil, "", fmt.Errorf("cannot tween %T.%s", base, v.Name)
 	case IndexE:
+		// list[k] — arrow into a list element of a global
+		if v.I != nil {
+			if id, ok := v.X.(Ident); ok {
+				if g, ok2 := rt.Globals[string(id)]; ok2 {
+					s := &Scope{rt: rt, binds: binds}
+					idxVal, err := s.Eval(v.I)
+					if err != nil {
+						return nil, "", err
+					}
+					idxF, err := asFloat(idxVal)
+					if err != nil {
+						return nil, "", err
+					}
+					return ListElemRef{G: g, Idx: int(idxF)}, "", nil
+				}
+			}
+		}
 		s := &Scope{rt: rt, binds: binds}
 		val, err := s.Eval(v)
 		if err != nil {
@@ -1429,8 +2226,7 @@ func (rt *Runtime) initFields() error {
 		}
 		state[k] = 1
 		if f.Def != nil && !f.Frozen {
-			deps := map[string]bool{}
-			exprDeps(f.Def, deps)
+			deps := entityExprDeps(e, f.Def)
 			for d := range deps {
 				name, fname, _ := strings.Cut(d, ".")
 				grp, ok := rt.Groups[name]
@@ -1519,9 +2315,7 @@ func (rt *Runtime) livenessPass() error {
 			f := e.Fields[n]
 			if f.Def != nil && !f.Frozen && !f.Rate && n != "fn" && n != "warp" {
 				exprFields = append(exprFields, slot{e, f})
-				d := map[string]bool{}
-				exprDeps(f.Def, d)
-				depsOf[f] = d
+				depsOf[f] = entityExprDeps(e, f.Def)
 			}
 		}
 	}
@@ -1537,8 +2331,10 @@ func (rt *Runtime) livenessPass() error {
 			for d := range depsOf[sl.f] {
 				name, fname, _ := strings.Cut(d, ".")
 				if _, isEnt := rt.Groups[name]; !isEnt {
-					if _, isGlob := rt.Globals[name]; isGlob && written[name] != nil {
-						sl.f.Live = true
+					if g, isGlob := rt.Globals[name]; isGlob {
+						if g.Live || rt.globalHasWriter(name) {
+							sl.f.Live = true
+						}
 					}
 					continue
 				}
@@ -1630,6 +2426,34 @@ func (rt *Runtime) livenessPass() error {
 	return nil
 }
 
+func entityExprDeps(e *Entity, expr Expr) map[string]bool {
+	deps := map[string]bool{}
+	exprDeps(expr, deps)
+
+	it, ok := e.It.(ItVal)
+	if !ok {
+		return deps
+	}
+	for dep := range deps {
+		name, field, hasField := strings.Cut(dep, ".")
+		local, ok := it.Cols[name]
+		if !ok {
+			continue
+		}
+		member, ok := local.(*Entity)
+		if !ok {
+			continue
+		}
+		delete(deps, dep)
+		if hasField {
+			deps[member.Name+"."+field] = true
+		} else {
+			deps[member.Name] = true
+		}
+	}
+	return deps
+}
+
 func isGeomField(name string) bool {
 	switch name {
 	case "opacity", "color", "fill", "stroke", "draw":
@@ -1664,27 +2488,57 @@ func (rt *Runtime) Step(t float64) error {
 		}
 	}
 
-	// live fields first: anims that target live fields read the fresh expr value
-	for _, sl := range rt.liveFields {
-		if sl.F.Frozen {
-			continue
+	evalLiveGlobals := func() error {
+		for _, g := range rt.liveGlobals {
+			if g.Def == nil || rt.globalHasWriter(g.Name) {
+				continue
+			}
+			s := &Scope{rt: rt}
+			val, err := s.Eval(g.Def)
+			if err != nil {
+				return fmt.Errorf("live global %s: %v", g.Name, err)
+			}
+			g.Val = val
 		}
-		s := &Scope{rt: rt, binds: map[string]Value{"it": sl.E.It}}
-		val, err := s.Eval(sl.F.Def)
-		if err != nil {
-			return fmt.Errorf("live field %s.%s: %v", sl.E.Name, sl.F.Name, err)
+		return nil
+	}
+	evalLiveFields := func(allowActiveWritten bool) error {
+		for _, sl := range rt.liveFields {
+			if sl.F.Frozen {
+				continue
+			}
+			key := sl.E.Name + "." + sl.F.Name
+			if rt.fieldHasWriter(key) && (!allowActiveWritten || !rt.fieldHasActiveWriter(key, t)) {
+				continue
+			}
+			s := &Scope{rt: rt, binds: map[string]Value{"it": sl.E.It}}
+			val, err := s.Eval(sl.F.Def)
+			if err != nil {
+				return fmt.Errorf("live field %s.%s: %v", sl.E.Name, sl.F.Name, err)
+			}
+			sl.F.Val = coerceField(sl.F.Name, val)
 		}
-		sl.F.Val = coerceField(sl.F.Name, val)
+		return nil
+	}
+	applyPosts := func() {
+		for key, post := range rt.post {
+			cur := post.Ref.Get()
+			goal, err := evalTweenGoal(rt, post.RHS, post.Binds, post.ElemIdx, post.ElemN, cur)
+			if err != nil {
+				rt.warnOnce(fmt.Sprintf("post-tween `%s`: %v", key, err))
+				continue
+			}
+			post.Ref.Set(goal)
+		}
 	}
 
-	for key, post := range rt.post {
-		cur := post.Ref.Get()
-		goal, err := evalTweenGoal(rt, post.RHS, post.Binds, post.ElemIdx, post.ElemN, cur)
-		if err != nil {
-			rt.warnOnce(fmt.Sprintf("post-tween `%s`: %v", key, err))
-			continue
-		}
-		post.Ref.Set(goal)
+	applyPosts()
+	if err := evalLiveGlobals(); err != nil {
+		return err
+	}
+	// Active tweens targeting live fields read these fresh expression values.
+	if err := evalLiveFields(true); err != nil {
+		return err
 	}
 
 	for _, a := range rt.Anims {
@@ -1710,6 +2564,32 @@ func (rt *Runtime) Step(t float64) error {
 		if a.Update != nil {
 			a.Update(a, rt, a.Ease(u))
 		}
+		// Later rows in the same block must see dynamic expressions derived
+		// from roots written by earlier rows on this frame.
+		if err := evalLiveGlobals(); err != nil {
+			return err
+		}
+		if err := evalLiveFields(false); err != nil {
+			return err
+		}
+	}
+
+	// Derived names and fields should reflect roots as they stand on this
+	// frame after tweens/post-assignments have written them.
+	if err := evalLiveGlobals(); err != nil {
+		return err
+	}
+	if err := evalLiveFields(false); err != nil {
+		return err
+	}
+	// A completed tween is a live assignment. Re-apply it after its RHS has
+	// settled for this frame, then refresh anything derived from that target.
+	applyPosts()
+	if err := evalLiveGlobals(); err != nil {
+		return err
+	}
+	if err := evalLiveFields(false); err != nil {
+		return err
 	}
 
 	// rate fields: fixed-dt Euler, prev-frame self

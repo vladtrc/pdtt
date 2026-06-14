@@ -17,15 +17,13 @@ dot target:
 | source{opacity: 0} -> source
 | target{opacity: 0} -> target
 
-# window 1: source morphs to where target sits at the start ([2.8, 0]) and
-# stays there. It is a straight horizontal slide -- y never moves -- mirroring
-# manim's Transform, which freezes the target snapshot at animation start.
-# The live target keeps orbiting independently the whole time.
+# Both endpoints move: target orbits while source tweens toward target.at.
+# After the window, source.at remains the live expression target.at.
 | 4s | linear
 | theta -> math.tau
-| source.at -> [2.8, 0]
+| source.at -> target.at
 | source.color -> color.red
 
-# window 2: target keeps orbiting; source stays put.
+# The tween is over, but source keeps tracking target as theta continues.
 | 2s | linear
 | theta -> 1.5 * math.tau
