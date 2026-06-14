@@ -328,20 +328,29 @@ func hexColor(s string) Color {
 }
 
 var namedColors = map[string]Color{
-	"white":  {1, 1, 1, 1},
-	"black":  {0, 0, 0, 1},
-	"blue":   hexColor("#58C4DD"),
-	"blue_e": hexColor("#1C758A"),
-	"pink":   hexColor("#D147BD"),
-	"red":    hexColor("#FC6255"),
-	"red_b":  hexColor("#FF8080"),
-	"yellow": hexColor("#FFFF00"),
-	"green":  hexColor("#83C167"),
-	"grey":   hexColor("#888888"),
-	"gray":   hexColor("#888888"),
-	"orange": hexColor("#FF862F"),
-	"purple": hexColor("#9A72AC"),
-	"teal":   hexColor("#5CD0B3"),
+	"white":      {1, 1, 1, 1},
+	"black":      {0, 0, 0, 1},
+	"blue":       hexColor("#58C4DD"),
+	"blue_e":     hexColor("#1C758A"),
+	"cyan":       hexColor("#00FFFF"),
+	"teal":       hexColor("#5CD0B3"),
+	"green":      hexColor("#83C167"),
+	"lime":       hexColor("#32CD32"),
+	"yellow":     hexColor("#FFFF00"),
+	"gold":       hexColor("#F0AC5F"),
+	"orange":     hexColor("#FF862F"),
+	"red":        hexColor("#FC6255"),
+	"red_b":      hexColor("#FF8080"),
+	"maroon":     hexColor("#C55F73"),
+	"pink":       hexColor("#D147BD"),
+	"magenta":    hexColor("#FF00FF"),
+	"purple":     hexColor("#9A72AC"),
+	"violet":     hexColor("#EE82EE"),
+	"brown":      hexColor("#8B4513"),
+	"grey":       hexColor("#888888"),
+	"gray":       hexColor("#888888"),
+	"dark_gray":  hexColor("#444444"),
+	"light_gray": hexColor("#BBBBBB"),
 }
 
 var namedVecs = map[string]Vec{
@@ -356,23 +365,16 @@ var namedNums = map[string]float64{
 
 type namespace map[string]Value
 
+func colorNamespace() namespace {
+	ns := make(namespace, len(namedColors))
+	for name, color := range namedColors {
+		ns[name] = color
+	}
+	return ns
+}
+
 var namespaces = map[string]namespace{
-	"color": {
-		"white":  namedColors["white"],
-		"black":  namedColors["black"],
-		"blue":   namedColors["blue"],
-		"blue_e": namedColors["blue_e"],
-		"pink":   namedColors["pink"],
-		"red":    namedColors["red"],
-		"red_b":  namedColors["red_b"],
-		"yellow": namedColors["yellow"],
-		"green":  namedColors["green"],
-		"grey":   namedColors["grey"],
-		"gray":   namedColors["gray"],
-		"orange": namedColors["orange"],
-		"purple": namedColors["purple"],
-		"teal":   namedColors["teal"],
-	},
+	"color": colorNamespace(),
 	"corner": {
 		"ul":     namedVecs["ul"],
 		"ur":     namedVecs["ur"],

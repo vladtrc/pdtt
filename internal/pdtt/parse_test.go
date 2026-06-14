@@ -136,6 +136,14 @@ func compileScene(t *testing.T, src string) *Runtime {
 	return rt
 }
 
+func TestColorNamespaceIncludesExtendedPalette(t *testing.T) {
+	for _, name := range []string{"magenta", "cyan", "gold", "maroon", "violet", "light_gray"} {
+		if _, ok := namespaces["color"][name]; !ok {
+			t.Fatalf("color namespace missing %q", name)
+		}
+	}
+}
+
 func oneEntity(t *testing.T, rt *Runtime, name string) *Entity {
 	t.Helper()
 	grp := rt.Groups[name]
