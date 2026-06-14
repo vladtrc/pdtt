@@ -95,6 +95,8 @@ func (r *Renderer) Frame(rt *Runtime) *gg.Context {
 			r.drawPlot(dc, c, e, tf)
 		case "arrow":
 			r.drawArrow(dc, c, e, tf)
+		case "arc":
+			r.drawArc(dc, c, e, tf)
 		}
 	}
 	return dc
@@ -603,7 +605,7 @@ func gridPoint(rt *Runtime, e *Entity, p Vec) Vec {
 	if e.WarpNew == nil || e.WarpBlend <= 0 {
 		return p
 	}
-	v, err := evalWith(rt, e.WarpNew, "p", p)
+	v, err := evalWith(rt, e.WarpNew, map[string]Value{"p": p})
 	if err != nil {
 		return p
 	}
@@ -765,13 +767,26 @@ func (r *Renderer) drawPlot(dc *gg.Context, c cam, e *Entity, tf Transform) {
 	var pts []Vec
 	for i := 0; i <= limit; i++ {
 		x := xr[0] + (xr[1]-xr[0])*float64(i)/n
-		v, err := evalWith(rt, fnField.Def, "x", x)
+		binds := map[string]Value{"x": x}
+		if it, ok := e.It.(ItVal); ok && (it.N > 0 || it.Cols != nil) {
+			binds["it"] = it
+		}
+		v, err := evalWith(rt, fnField.Def, binds)
 		if err != nil {
 			return
 		}
 		y, err := asFloat(v)
 		if err != nil {
 			return
+		}
+		if math.IsNaN(y) || math.IsInf(y, 0) {
+			if len(pts) > 1 {
+				setColor(dc, entityColor(e), op)
+				dc.SetLineWidth(math.Max(2, 0.035*c.ppu))
+				r.polyline(dc, c, pts)
+			}
+			pts = nil
+			continue
 		}
 		if y < yr[0] || y > yr[1] {
 			if len(pts) > 1 {
@@ -805,4 +820,47 @@ func (r *Renderer) drawArrow(dc *gg.Context, c cam, e *Entity, tf Transform) {
 	dc.SetLineWidth(math.Max(1.5, 0.035*c.ppu))
 	r.polyline(dc, c, []Vec{from, tip})
 	r.arrowHead(dc, c, tip, tip.Sub(from), op, col)
+}
+
+func (r *Renderer) drawArc(dc *gg.Context, c cam, e *Entity, tf Transform) {
+	op := tf.Opacity
+	draw := clamp01(e.fnum("draw"))
+	if draw <= 0.001 {
+		return
+	}
+	rad := e.fnum("radius")
+	if rad <= 0 {
+		rad = 0.5
+	}
+	center := tf.At
+	start := e.fnum("start_angle") + tf.Angle
+	end := e.fnum("end_angle") + tf.Angle
+	sweep := (end - start) * draw
+	steps := int(math.Ceil(math.Abs(sweep) / (math.Pi / 48)))
+	if steps < 2 {
+		steps = 2
+	}
+	if steps > 192 {
+		steps = 192
+	}
+	rad *= tf.Scale
+	pts := make([]Vec, 0, steps+1)
+	for i := 0; i <= steps; i++ {
+		u := float64(i) / float64(steps)
+		a := start + sweep*u
+		pts = append(pts, Vec{
+			center[0] + rad*math.Cos(a),
+			center[1] + rad*math.Sin(a),
+			center[2],
+		})
+	}
+	col := fieldColor(e, "stroke", entityColor(e))
+	setColor(dc, col, op)
+	dc.SetLineWidth(math.Max(1.5, 0.035*c.ppu))
+	r.polyline(dc, c, pts)
+	if e.fnum("arrow") > 0.5 && len(pts) >= 2 {
+		tip := pts[len(pts)-1]
+		prev := pts[len(pts)-2]
+		r.arrowHead(dc, c, tip, tip.Sub(prev), op, col)
+	}
 }

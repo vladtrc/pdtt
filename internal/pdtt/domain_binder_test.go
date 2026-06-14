@@ -309,6 +309,39 @@ roots[[1, 1] as i]:
 	}
 }
 
+func TestPlotFnEvalWithFamilyIndex(t *testing.T) {
+	rt := compileScene(t, `scene plot_family
+
+energies: [1, 4]
+
+axes ax:
+  x_range: [-2, 2, 1]
+  y_range: [-2, 2, 1]
+
+orbits[energies.indices as i]:
+  plot hi:
+    axes: ax
+    fn: energies[i] + x
+`)
+
+	e := oneEntity(t, rt, familyMemberName("orbits", 1, "hi"))
+	it, ok := e.It.(ItVal)
+	if !ok {
+		t.Fatalf("It = %T, want ItVal", e.It)
+	}
+	v, err := evalWith(rt, e.Fields["fn"].Def, map[string]Value{"x": 0.0, "it": it})
+	if err != nil {
+		t.Fatalf("evalWith: %v", err)
+	}
+	f, err := asFloat(v)
+	if err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	if f != 4 {
+		t.Fatalf("energies[1] + 0 = %v, want 4", f)
+	}
+}
+
 func mustExpr(t *testing.T, src string) Expr {
 	t.Helper()
 	e, err := ParseExpr(src)

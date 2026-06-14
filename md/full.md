@@ -1,123 +1,129 @@
-# PDTT quick reference for scene generation
+# PDTT full LLM reference
 
-Write only valid PDTT source code. No Markdown fences, no explanation.
+Write valid PDTT source only. Do not add Markdown fences or explanations.
 
-Target render is a square 640x640 video. The default camera frame is about `14.2 x 8.0` world units, centered at `[0, 0]`; keep important content inside roughly `x = -6.7..6.7`, `y = -3.6..3.6`. Use `frame` only when a camera move is needed. Normal title/narration text scale is `0.48..0.70`; formulas `0.65..0.95`; labels near points `0.28..0.42`. Avoid long text lines; split ideas into several short sequential cards.
+PDTT is a small scene language for rendered math/geometry animation. A file declares
+state first, then schedules animation with `|` time blocks. Declarations create values
+and records. Time rows tween values with `->`. Records start inactive and appear only
+after an entry tween or a morph activates them.
 
-## Scene quality rules
+## File Shape
 
-- Make scenes readable: introduce objects sequentially, then animate relationships.
-- Do not show more than one visible explanatory text card at the same time. Fade the old text out before showing the next.
-- Do not morph text. Use opacity/write transitions for text; reserve `morph` for shape-to-shape or visual object transformations.
-- After text appears, pause long enough to read it: usually `1.2s..2.8s` depending on length.
-- Parallel animation is powerful, but use it mostly for related non-text objects. Text beats should usually be sequential.
-- Prefer clean layouts: title near top (`y` around `3.0`), main geometry centered or slightly below, labels close to objects.
-- Use colors sparingly: `color.white` for main text, `color.yellow` for emphasis, and a few distinct accent colors such as `color.blue`, `color.green`, `color.red`, `color.pink`, `color.magenta`, `color.teal`, `color.cyan`, `color.orange`, or `color.purple`.
-- End with a short hold or gentle fade-out; avoid abrupt final frames.
-
-## Top-level syntax
-
-```
+```pdtt
 scene name
 
-name: expr                  # live global; re-evaluates when dependencies change
-name = expr                 # frozen capture
-home: snapshot frame        # frozen snapshot of record state
+live_name: expr                  # live global, re-evaluates when dependencies change
+frozen_name = expr               # capture, evaluated once at declaration
+home: snapshot frame             # frozen snapshot of a record
 
-type name:
-  field: expr
-  rate field: expr
-  for: list_or_range
+type record_name:
+  field: expr                    # live field
+  rate field: expr               # derivative d(field)/dt; may read self
 
-text("short text") label:
+text("short sentence") label:
   at: [0, 3]
   scale: 0.6
   color: color.white
 
-typst("x^2 + y^2 = r^2") formula:
-  at: [0, 2.7]
-  scale: 0.8
-  color: color.yellow
-```
-
-Records start inactive and are not rendered until an entry or morph activates them. Same `type name:` declared again merges fields; first field wins.
-
-## Time syntax
-
-Animation lines start with `|`. A blank line ends a block. First `|` line of a block is the clock; following rows in that block run in parallel unless windows/stagger change them.
-
-```
 | 1.0s | smooth
-| obj{opacity: 0, scale: 0.2} -> obj
-
-| 2.0s | linear
-| value -> 5
-
-| 0.6s | smooth
-| old_text.opacity -> 0
-
-| 0.6s | smooth
-| new_text{opacity: 0} -> new_text
-
-| 1.8s
-```
-
-`path -> expr` tweens a field/global to a target. After the tween, the path is the target; if the target is dynamic, it keeps following.
-
-`obj{field: start, ...} -> obj` is an entry/self-transition: activates `obj` and tweens overridden fields from the phantom start values to declared values. Common entries:
-
-```
-| dot{opacity: 0, scale: 0.2} -> dot
-| line{draw: 0} -> line
 | label{opacity: 0} -> label
+
+| 1.5s
 ```
 
-Modifiers before `->`:
+Top-level forms:
 
-- Windows: `0-.5`, `.5-`, `25%-75%`, `0.2s-1.1s`
-- Easing: `linear`, `smooth`, `ease_in`, `ease_out`, `ease_in_out`
-- Transitions: `morph`, `fade_in`, `draw`, `write`
-- Offsets: `after 0.5s`, `lag 0.2s`, `stagger 0.08s`
-- Pairing: `by name`, `by pos`
+- `scene name`
+- `extern fn name(args...) -> type` declares a pure host function by name
+- `name: expr` creates a live global
+- `name = expr` creates a frozen capture
+- `type name:` creates one record
+- `text("...") name:` and `typst("...") name:` create text records with the `text`
+  field already set
+- `family[domain as i]:` creates a family of member records over an integer domain
+- Lines beginning with `|` create time blocks
 
-Blocks:
+Blank lines end normal record blocks and time blocks. Blank lines may separate members
+inside a family.
 
+Comments start with `#` outside strings.
+
+## Globals, Captures, And Snapshots
+
+Use `:` for values that should keep following their dependencies:
+
+```pdtt
+t: 0
+p: [2 * cos(t), 2 * sin(t)]
 ```
-| 1.2s | smooth              # rows below run together
-| grid{draw: 0} -> grid
-| axes{opacity: 0} -> axes
 
-| 2.0s                       # pause/hold
+Use `=` when you need the value frozen at declaration time:
+
+```pdtt
+start = p
 ```
 
-## Collections and broadcast
+Use `snapshot` when freezing a record's fields:
 
+```pdtt
+home: snapshot frame
+
+| 1.0s | smooth
+| frame.w -> 9
+
+| 1.0s | smooth
+| frame -> home
 ```
-xs: [-2, 0, 2]
-cols: [color.red, color.green, color.blue]
 
+`snapshot` is intentionally frozen even when declared with `:`.
+
+## Records
+
+Record syntax is singular:
+
+```pdtt
 dot p:
-  for: xs
-  at: [it, 0]
-  radius: 0.1
-  color: cols[it.i]
-
-| 1.2s | stagger 0.12s | smooth
-| p[*]{opacity: 0, scale: 0.2} -> p[i]
-```
-
-Broadcast `record[*]` expands one row per element. Use `it.i`/`i` for index and `it.n` for count. Use `record[* as i]` when RHS needs the same index. `| each record 0.6s` creates sequential blocks per element.
-
-## Useful primitives
-
-Common fields: `at`, `scale`, `angle`, `opacity`, `color`, `stroke`, `fill`, `draw`.
-
-Shapes:
-
-```
-dot d:
   at: [0, 0]
   radius: 0.12
+  color: color.red
+```
+
+Declaring the same `type name:` again merges fields into the same record. First field
+definition wins unless a later time event uses `set field: expr`.
+
+Fields re-evaluate when their dependencies change. This is the normal way to make one
+object follow another:
+
+```pdtt
+dot p:
+  at: [x, 0]
+
+text("value") label:
+  at: above(p, 0.2)
+```
+
+Use `rate field:` for continuous updates driven by runtime:
+
+```pdtt
+dot p:
+  at: [0, 0]
+  rate angle: 1
+```
+
+After time has advanced, redeclare a record with `set field: expr` when you need to
+replace a live field definition at that point in the score.
+
+## Renderable Types
+
+Common fields on visual records: `at`, `scale`, `angle`, `opacity`, `color`, `fill`,
+`stroke`, `draw`.
+
+Supported rendered record types:
+
+```pdtt
+dot d:
+  at: [0, 0]
+  radius: 0.1
   color: color.blue
 
 square s:
@@ -131,16 +137,24 @@ rect r:
   w: 2
   h: 1
   stroke: color.white
+  fill: color.teal @ 30%
 
 arrow a:
   from: [-2, 0]
   to: [2, 0]
   color: color.yellow
+
+arc angle_mark:
+  at: [0, 0]
+  radius: 0.6
+  start_angle: 0
+  end_angle: math.pi / 2
+  color: color.green
 ```
 
 Graphs:
 
-```
+```pdtt
 plane grid:
   at: [0, -0.4]
   x_range: [-4, 4, 1]
@@ -151,7 +165,7 @@ axes ax:
   x_range: grid.x_range
   y_range: grid.y_range
 
-plot parabola:
+plot curve:
   axes: ax
   fn: 0.35 * x * x - 1
   color: color.yellow
@@ -164,7 +178,7 @@ dot point:
 
 Text:
 
-```
+```pdtt
 text("A short readable sentence.") note:
   at: [0, 3.05]
   scale: 0.58
@@ -176,32 +190,231 @@ typst("f(x)=x^2") formula:
   color: color.yellow
 ```
 
-Use `text(...)` for prose, `typst(...)` for formulas/math-like labels. Do not use LaTeX commands unless Typst understands them; prefer plain Typst-ish math strings like `"f(x)=x^2"`, `"x'' + x = 0"`, `"dot x"`.
+Use `text(...)` for prose and `typst(...)` for formulas. Avoid LaTeX commands unless
+Typst accepts them. Prefer strings like `"f(x)=x^2"`, `"x'' + x = 0"`, `"dot x"`.
 
-## Expressions and helpers
+`tex` and `decimal` are renderer-compatible legacy text types, but generated code
+should use `text` and `typst`.
 
-Types: int/float/string/bool, vec2/vec3 (`[x, y]`), color, duration. Operators: arithmetic, comparisons, booleans, ternary `cond ? a : b`.
+## Time Blocks
 
-Builtins/namespaces: `fmt`, `range`, `sum`, `prod`, `pair_sum`, `sqrt`, `sin`, `cos`, `tan`, `sinh`, `cosh`, `abs`, `center(obj)`, `below(obj, gap)`, `above(obj, gap)`, `right_of(obj, gap)`, `corner(corner.ul)`, `edge(approx.right)`, `math.pi`, `math.tau`.
+Every animation row starts with `|`. A blank line ends the current time block.
 
-Colors: `color.white`, `color.black`, `color.gray`/`color.grey`, `color.light_gray`, `color.dark_gray`, `color.blue`, `color.blue_e`, `color.cyan`, `color.teal`, `color.green`, `color.lime`, `color.yellow`, `color.gold`, `color.orange`, `color.red`, `color.red_b`, `color.maroon`, `color.pink`, `color.magenta`, `color.purple`, `color.violet`, `color.brown`. Use opacity with `@`, for example `color.magenta @ 60%`.
+The first `|` line of a block is the clock. Rows in the same block run in parallel
+against that clock unless a window or stagger changes them.
 
-## Things that do not exist
-
-No `bind`, `track`, updater callbacks, `during {}`, `tween x to y`, camera class, uppercase constants (`RED`, `UL`), plural type names, or morph as a verb. Use `->` with modifiers, dynamic expressions, the builtin `frame`, namespaced constants, and singular record names.
-
-## Reliable scene pattern
-
-1. Declare globals, grid/axes/objects/text.
-2. Enter grid/axes or background.
-3. Show one short text card, pause, fade it out.
-4. Animate the main object(s).
-5. Show the next text/formula, pause, fade it out.
-6. Finish with the final visual state and a hold.
-
-Example:
-
+```pdtt
+| 4s | linear
+| theta -> math.tau
+| 0-.5 | dot.opacity -> 1
 ```
+
+The header may also carry its first edit inline:
+
+```pdtt
+| 1s | smooth | dot{opacity: 0, scale: 0.2} -> dot
+```
+
+A standalone clock with no rows is a pause:
+
+```pdtt
+| 1.5s
+```
+
+Use `| each record dur` to create one sequential block per row in a record/group:
+
+```pdtt
+| each points 0.4s
+| it.opacity -> 1
+```
+
+`| each record as name dur` binds the row as `name`.
+
+## Tweens
+
+`path -> expr` is the core operation. During the row window, PDTT interpolates the
+left side toward the right side. After the row, the left side is assigned to the right
+side. If the right side is dynamic, it keeps tracking.
+
+```pdtt
+| 1.5s | smooth
+| p.at -> [3, 1]
+| label.at -> above(p, 0.25)
+```
+
+Entry tween:
+
+```pdtt
+| 0.8s | smooth
+| p{opacity: 0, scale: 0.2} -> p
+| curve{draw: 0} -> curve
+```
+
+`obj{field: start, ...} -> obj` activates `obj` and tweens the listed fields from
+phantom start values back to the declared field values.
+
+Record tween:
+
+```pdtt
+home: snapshot frame
+
+| 1s | smooth
+| frame -> home
+```
+
+Morph:
+
+```pdtt
+| 1s | morph | square_a -> dot_b
+```
+
+Morph activates the target and deactivates the source at the end.
+
+## Modifiers
+
+Modifiers are separate `|` cells before the edit. Order is free. The edit cell must be
+last.
+
+| Modifier | Meaning |
+|---|---|
+| `linear`, `smooth`, `ease_in`, `ease_out`, `ease_in_out` | easing |
+| `0-.5`, `.5-`, `25%-75%`, `0.2s-1.1s` | window |
+| `0.6s` | window from `0` to `0.6s` |
+| `after 0.5s`, `lag 0.2s`, `stagger 0.08s` | offsets |
+| `morph`, `fade_in`, `draw`, `write` | transition strategy |
+| `by name`, `by pos` | pairing for structural transitions |
+
+Examples:
+
+```pdtt
+| 1.2s | smooth
+| grid{draw: 0} -> grid
+| axes{opacity: 0} -> axes
+
+| 2s | smooth | stagger 0.08s
+| dots[* as i]{opacity: 0, scale: 0.2} -> dots[i]
+```
+
+Do not write `| 4s linear`; the canonical form is `| 4s | linear`.
+
+## Collections, Broadcast, And Families
+
+Lists use `[a, b, c]`. Index them with `[i]`. `list.indices` returns `[0, 1, ...]`;
+`list.len` returns the length.
+
+Simple plural record:
+
+```pdtt
+xs: [-2, 0, 2]
+cols: [color.red, color.green, color.blue]
+
+dot p:
+  for: xs
+  at: [it, 0]
+  radius: 0.1
+  color: cols[i]
+```
+
+Inside a `for:` record, `it` is the current element, `i` is the index, and `it.n` is
+the count.
+
+Broadcast `[*]` expands one row per element:
+
+```pdtt
+| 1.2s | stagger 0.12s | smooth
+| p[* as i]{opacity: 0, scale: 0.2} -> p[i]
+```
+
+Use `[* as i]` when the RHS needs the same index. Plain `[*]` also binds canonical
+`i` and `it` for simple cases.
+
+Families group several member records per domain key:
+
+```pdtt
+val: [-3, -1, 3]
+cols: [color.red, color.green, color.blue]
+
+roots[val.indices as i]:
+  dot mark:
+    at: ax.point(val[i], 0)
+    radius: 0.095
+    color: cols[i]
+
+  arrow hit:
+    from: ax.point(val[i], -1.2)
+    to: mark.at
+    color: cols[i]
+
+  text n:
+    text: fmt("{:.2f}", val[i])
+    at: below(mark, 0.2)
+    color: cols[i]
+```
+
+Access family members with `roots[i].mark`, `roots[i].hit`, `roots[i].n`.
+
+Broadcast family members like this:
+
+```pdtt
+| 1.2s | smooth | stagger 0.08s
+| roots[* as i].mark{opacity: 0, scale: 0.2} -> roots[i].mark
+| roots[* as i].hit{draw: 0} -> roots[i].hit
+```
+
+If many objects derive from a list, animate the list and let live fields follow:
+
+```pdtt
+| 4s | smooth
+| val[* as i] -> [-2, 1, 3][i]
+```
+
+Family domains must evaluate to unique integers. `0..n` produces integers from `0`
+through `n-1`.
+
+## Expressions
+
+Supported expression forms:
+
+- numbers: `0`, `42`, `-.3`, `1.0`
+- strings: `"hello"`
+- lists/vectors: `[0, 1]`, `[x, y, z]`
+- ranges: `0..n`
+- arithmetic: `+`, `-`, `*`, `/`, `%`
+- comparisons: `==`, `!=`, `<`, `>`, `<=`, `>=`
+- ternary: `cond ? a : b`
+- legacy ternary: `a if cond else b`
+- attributes: `p.at`, `p.at.x`, `list.indices`, `list.len`
+- indexing: `list[i]`, `family[i].member`
+- calls: `fmt("x = {:.2f}", x)`, `sin(t)`, `ax.point(x, y)`
+- color alpha: `color.red @ 60%`
+- snapshots: `snapshot frame`
+
+There are no boolean literals in the current parser. Use comparisons or numeric
+truthiness in conditionals.
+
+Builtins and namespaces:
+
+- math: `math.pi`, `math.tau`, `math.e`
+- trig/math: `sin`, `cos`, `exp`, `sinh`, `cosh`, `abs`, `sqrt`
+- lists: `range(n)`, `sum(list)`, `prod(list)`, `pair_sum(list)`
+- strings: `fmt(format, ...)`
+- layout: `center(obj)`, `below(obj, gap)`, `above(obj, gap)`, `right_of(obj, gap)`,
+  `left(d)`, `right(d)`, `corner(corner.ul)`, `edge(approx.right)`, `stack().top`,
+  `stack().bottom`, `stack().center`
+- axes method: `ax.point(x, y)`
+- namespaces: `color.*`, `corner.ul/ur/dl/dr/center`, `approx.above/below/left/right`
+
+Colors:
+
+`color.white`, `color.black`, `color.gray`, `color.grey`, `color.light_gray`,
+`color.dark_gray`, `color.blue`, `color.blue_e`, `color.cyan`, `color.teal`,
+`color.green`, `color.lime`, `color.yellow`, `color.gold`, `color.orange`,
+`color.red`, `color.red_b`, `color.maroon`, `color.pink`, `color.magenta`,
+`color.purple`, `color.violet`, `color.brown`.
+
+## Complete Example
+
+```pdtt
 scene parabola_intro
 
 t: -3
@@ -260,3 +473,18 @@ dot p:
 
 | 1.5s
 ```
+
+## Things That Do Not Exist
+
+Do not generate these:
+
+- Markdown fences or explanatory prose around the code
+- `bind`, `track`, updater callbacks, `during {}`
+- `tween x to y`, `animate(...)`, `wait(...)`
+- camera classes; use the built-in `frame` record
+- uppercase constants like `RED`, `BLUE`, `UL`, `RIGHT`
+- plural type names like `dots p:` or `axeses`
+- `morph` as a verb; use `| ... | morph | a -> b`
+- `gone`; tween `opacity` or `draw` to `0`
+- `for: from "cmd"` and `fast_after`; this prototype rejects them
+- LaTeX-only commands in `typst(...)`

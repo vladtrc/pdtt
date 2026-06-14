@@ -1017,6 +1017,18 @@ func init() {
 			f, err := arg1f(a)
 			return math.Cos(f), err
 		},
+		"exp": func(s *Scope, a []Value) (Value, error) {
+			f, err := arg1f(a)
+			return math.Exp(f), err
+		},
+		"sinh": func(s *Scope, a []Value) (Value, error) {
+			f, err := arg1f(a)
+			return math.Sinh(f), err
+		},
+		"cosh": func(s *Scope, a []Value) (Value, error) {
+			f, err := arg1f(a)
+			return math.Cosh(f), err
+		},
 		"abs": func(s *Scope, a []Value) (Value, error) {
 			f, err := arg1f(a)
 			return math.Abs(f), err
@@ -1235,10 +1247,10 @@ func fmtBuiltin(s *Scope, args []Value) (Value, error) {
 	return out, nil
 }
 
-// evalWith evaluates an expression with one extra binder (plot fn `x`,
-// warp `p`).
-func evalWith(rt *Runtime, e Expr, name string, v Value) (Value, error) {
-	s := &Scope{rt: rt, binds: map[string]Value{name: v}}
+// evalWith evaluates an expression with extra binders (plot fn `x`, warp `p`,
+// family `it`, …).
+func evalWith(rt *Runtime, e Expr, binds map[string]Value) (Value, error) {
+	s := &Scope{rt: rt, binds: binds}
 	return s.Eval(e)
 }
 
@@ -1255,6 +1267,12 @@ func entitySize(e *Entity) (w, h float64) {
 		r := e.fnum("radius")
 		if r == 0 {
 			r = 0.08
+		}
+		return 2 * r * scale, 2 * r * scale
+	case "arc":
+		r := e.fnum("radius")
+		if r <= 0 {
+			r = 0.5
 		}
 		return 2 * r * scale, 2 * r * scale
 	case "tex", "typst", "text", "decimal":
