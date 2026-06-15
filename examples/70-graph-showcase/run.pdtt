@@ -44,7 +44,8 @@ roots[val.indices as i]:            # one binder rule — bind i over a domain
     stroke.color: color[i]
     stroke.end: arrow
 
-  typst(fmt("(x {:+.2f})", 0 - val[i])) factor:
+  typst factor:
+    text: fmt("(x {:+.2f})", 0 - val[i])
     at: factor_at[i]
     scale: 0.9
     color: color[i]
@@ -55,12 +56,14 @@ roots[val.indices as i]:            # one binder rule — bind i over a domain
     scale: 1
     color: color[i]
 
-typst("= 0") factor_eq:
+typst factor_eq:
+  text: "= 0"
   at: [2.35, 3.25]
   scale: 0.9
   color: color.white
 
-typst(fmt("{:.2f}x^3 {:+.2f}x^2 {:+.2f}x {:+.2f} = 0", lead, c2, c1, c0)) expanded:
+typst expanded:
+  text: fmt("{:.2f}x^3 {:+.2f}x^2 {:+.2f}x {:+.2f} = 0", lead, c2, c1, c0)
   at: [-1.25, 2.55]
   scale: 0.9
   color: color.teal

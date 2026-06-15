@@ -20,7 +20,8 @@ type record_name:
   field: expr                    # live field
   rate field: expr               # derivative d(field)/dt; may read self
 
-text("short sentence") label:
+text label:
+  text: "short sentence"
   at: [0, 3]
   scale: 0.6
   color: color.white
@@ -38,8 +39,7 @@ Top-level forms:
 - `name: expr` creates a live global
 - `name = expr` creates a frozen capture
 - `type name:` creates one record
-- `text("...") name:` and `typst("...") name:` create text records with the `text`
-  field already set
+- `text name:` and `typst name:` create text records; put the string in the `text:` field
 - `family[domain as i]:` creates a family of member records over an integer domain,
   commonly `family[0..n as i]:`
 - Lines beginning with `|` create time blocks
@@ -109,7 +109,8 @@ object follow another:
 dot p:
   at: [x, 0]
 
-text("value") label:
+text label:
+  text: "value"
   at: above(p, 0.2)
 ```
 
@@ -183,19 +184,22 @@ dot point:
 Text:
 
 ```pdtt
-text("A short readable sentence.") note:
+text note:
+  text: "A short readable sentence."
   at: [0, 3.05]
   scale: 0.58
   color: color.white
 
-typst("f(x)=x^2") formula:
+typst formula:
+  text: "f(x)=x^2"
   at: [0, 2.55]
   scale: 0.82
   color: color.yellow
 ```
 
-Use `text(...)` for prose and `typst(...)` for formulas. Avoid LaTeX commands unless
-Typst accepts them. Prefer strings like `"f(x)=x^2"`, `"x'' + x = 0"`, `"dot x"`.
+Use `text` for prose and `typst` for formulas. Put the string in the `text:` field.
+Avoid LaTeX commands unless Typst accepts them. Prefer strings like `"f(x)=x^2"`,
+`"x'' + x = 0"`, `"dot x"`.
 
 `tex` and `decimal` are renderer-compatible legacy text types, but generated code
 should use `text` and `typst`.
@@ -281,7 +285,7 @@ last.
 
 | Modifier | Meaning |
 |---|---|
-| `linear`, `smooth`, `ease_in`, `ease_out`, `ease_in_out` | easing |
+| `linear`, `smooth`, `ease_in`, `ease_out`, `ease_out_cubic`, `ease_in_out` | easing |
 | `0-.5`, `.5-`, `25%-75%`, `0.2s-1.1s` | window |
 | `0.6s` | window from `0` to `0.6s` |
 | `after 0.5s`, `lag 0.2s`, `stagger 0.08s` | offsets |
@@ -450,12 +454,14 @@ scene parabola_intro
 
 t: -3
 
-text("Парабола показывает квадратичный рост.") title:
+text title:
+  text: "Парабола показывает квадратичный рост."
   at: [0, 3.05]
   scale: 0.56
   color: color.white
 
-typst("f(x)=0.35x^2-1") formula:
+typst formula:
+  text: "f(x)=0.35x^2-1"
   at: [0, 2.55]
   scale: 0.82
   color: color.yellow
@@ -518,4 +524,5 @@ Do not generate these:
 - `morph` as a verb; use `| ... | morph | a -> b`
 - `gone`; tween `opacity` or `draw` to `0`
 - `for: from "cmd"` and `fast_after`; this prototype rejects them
-- LaTeX-only commands in `typst(...)`
+- LaTeX-only commands in `typst` records
+- `text("...") name:` and `typst("...") name:` constructor syntax; use a `text:` field

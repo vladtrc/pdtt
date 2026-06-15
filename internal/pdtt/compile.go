@@ -21,8 +21,17 @@ var easings = map[string]easeFn{
 	"ease_out": func(u float64) float64 {
 		return 1 - (1-u)*(1-u)
 	},
+	// Stronger ease-out: morph settles early, final value holds longer.
+	"ease_out_cubic": func(u float64) float64 {
+		x := 1 - u
+		return 1 - x*x*x
+	},
 	"ease_in_out": func(u float64) float64 { return u * u * (3 - 2*u) },
 }
+
+// textMorphReadU: once eased progress passes this, commit the destination
+// string and draw crisp glyphs instead of interpolated outline contours.
+const textMorphReadU = 0.88
 
 // Ref is a tweenable storage location.
 type Ref interface {
@@ -69,7 +78,7 @@ func coerceField(name string, v Value) Value {
 			return vec
 		}
 	case "points":
-		if pts, err := asPoints(v); err == nil {
+		if pts, err := resolvePoints(v); err == nil {
 			return pointsAsValues(pts)
 		}
 	}
@@ -134,6 +143,7 @@ func (r ListElemRef) Get() Value {
 	}
 	return nil
 }
+
 func (r ListElemRef) Set(v Value) {
 	list, ok := r.G.Val.([]Value)
 	if !ok {
@@ -162,6 +172,16 @@ type Anim struct {
 	started, done bool
 	start         []Value // captured start values per target
 	goal          []Value
+	textMorph     *textMorphAnim
+}
+
+type textMorphAnim struct {
+	E        *Entity
+	srcCtrs  [][]Vec
+	dstCtrs  [][]Vec
+	srcStyle shapeMorphStyle
+	dstStyle shapeMorphStyle
+	readable bool // destination text committed for crisp rendering
 }
 
 type Event struct {
@@ -1307,6 +1327,31 @@ func (rt *Runtime) expandExprStars(e Expr, binds map[string]Value) ([]exprVarian
 			out = append(out, exprVariant{expr: SnapshotE{X: x.expr}, binds: x.binds})
 		}
 		return out, nil
+	case GeomE:
+		var expandFields func(int, map[string]Value, []FieldDef) ([]exprVariant, error)
+		expandFields = func(i int, cur map[string]Value, fields []FieldDef) ([]exprVariant, error) {
+			if i == len(v.Fields) {
+				cp := make([]FieldDef, len(fields))
+				copy(cp, fields)
+				return []exprVariant{{expr: GeomE{Name: v.Name, Fields: cp}, binds: copyBinds(cur)}}, nil
+			}
+			fd := v.Fields[i]
+			vs, err := rt.expandExprStars(fd.E, cur)
+			if err != nil {
+				return nil, err
+			}
+			var out []exprVariant
+			for _, iv := range vs {
+				next := append(fields, FieldDef{Name: fd.Name, E: iv.expr, Line: fd.Line})
+				tail, err := expandFields(i+1, iv.binds, next)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, tail...)
+			}
+			return out, nil
+		}
+		return expandFields(0, binds, nil)
 	}
 	return nil, fmt.Errorf("cannot expand broadcast in %T", e)
 }
@@ -1367,6 +1412,9 @@ func (rt *Runtime) checkBoundExpr(e Expr, binds map[string]Value) error {
 				return nil
 			}
 			if _, ok := namedNums[name]; ok {
+				return nil
+			}
+			if _, ok := namedStrings[name]; ok {
 				return nil
 			}
 			if _, ok := namespaces[name]; ok {
@@ -1560,7 +1608,7 @@ func (rt *Runtime) expandArrow(row Row, w winState, mk func(from, to float64, eb
 func (rt *Runtime) resolveTrail(e *Entity, trail []string, binds map[string]Value) (Ref, error) {
 	if e.Type == "__family_proxy__" && len(trail) >= 1 {
 		// First trail element: member name
-		memberName := familyMemberName(e.Name, int(e.Idx), trail[0])
+		memberName := familyMemberName(e.Name, e.Idx, trail[0])
 		// The actual entity index in the family comes from the proxy's bind var
 		if itv, ok := e.It.(ItVal); ok {
 			// Find the actual index from Cols or use Idx
@@ -1881,7 +1929,12 @@ func (rt *Runtime) entityTrailRef(lhs Expr, binds map[string]Value) (*Entity, []
 // fillTween: standard tween; elemIdx >= 0 enables list-RHS positional pairing.
 func fillTween(a *Anim, ref Ref, rhs Expr, elemIdx, elemN int) {
 	a.Targets = []Ref{ref}
-	live := func() bool { fr, ok := ref.(FieldRef); return ok && fr.F.Live }
+	fr, isField := ref.(FieldRef)
+	textMorphField := isField && fr.F != nil && fr.E != nil &&
+		fr.F.Name == "text" && isTextType(fr.E.Type)
+	live := func() bool {
+		return isField && fr.F != nil && fr.F.Live
+	}
 	a.Start = func(a *Anim, rt *Runtime) error {
 		rt.clearPost(ref.Key())
 		cur := ref.Get()
@@ -1891,12 +1944,39 @@ func fillTween(a *Anim, ref Ref, rhs Expr, elemIdx, elemN int) {
 		}
 		a.start = []Value{cur}
 		a.goal = []Value{goal}
+		if textMorphField {
+			if fromStr, ok1 := valueAsString(cur); ok1 {
+				if goalStr, ok2 := valueAsString(goal); ok2 && fromStr != goalStr {
+					if tm, ok := prepareTextMorphAnim(fr.E, fromStr, goalStr); ok {
+						a.textMorph = tm
+					}
+				}
+			}
+		}
 		return nil
 	}
 	a.Update = func(a *Anim, rt *Runtime, u float64) {
 		goal, err := evalTweenGoal(rt, rhs, a.Binds, elemIdx, elemN, ref.Get())
 		if err == nil {
 			a.goal[0] = goal
+		}
+		if a.textMorph != nil {
+			if !a.textMorph.readable {
+				applyTextMorphStep(a.textMorph, u)
+			}
+			if !a.textMorph.readable && u >= textMorphReadU {
+				ref.Set(a.goal[0])
+				clearTextMorph(a.textMorph.E)
+				a.textMorph.readable = true
+			}
+			if u >= 1 {
+				if !a.textMorph.readable {
+					ref.Set(a.goal[0])
+					clearTextMorph(a.textMorph.E)
+				}
+				rt.setPost(ref, rhs, a.Binds, elemIdx, elemN)
+			}
+			return
 		}
 		from := a.start[0]
 		if live() {
@@ -1907,6 +1987,78 @@ func fillTween(a *Anim, ref Ref, rhs Expr, elemIdx, elemN int) {
 			rt.setPost(ref, rhs, a.Binds, elemIdx, elemN)
 		}
 	}
+}
+
+func valueAsString(v Value) (string, bool) {
+	switch x := v.(type) {
+	case Str:
+		return string(x), true
+	case string:
+		return x, true
+	}
+	return "", false
+}
+
+func withEntityTextValue(e *Entity, text string, fn func()) {
+	f := e.field("text")
+	saved := f.Val
+	f.Val = Str(text)
+	e.layoutCache = nil
+	e.layoutKey = ""
+	fn()
+	f.Val = saved
+	e.layoutCache = nil
+	e.layoutKey = ""
+}
+
+func textMorphLoopsFor(e *Entity, text string) [][]Vec {
+	var out [][]Vec
+	withEntityTextValue(e, text, func() {
+		out = morphLoops(e)
+	})
+	return out
+}
+
+func prepareTextMorphAnim(e *Entity, fromStr, goalStr string) (*textMorphAnim, bool) {
+	src := textMorphLoopsFor(e, fromStr)
+	dst := textMorphLoopsFor(e, goalStr)
+	if len(src) == 0 || len(dst) == 0 {
+		return nil, false
+	}
+	srcPairs, dstPairs := matchLoops(src, dst, morphSamples)
+	if len(srcPairs) == 0 || len(srcPairs) != len(dstPairs) {
+		return nil, false
+	}
+	return &textMorphAnim{
+		E:        e,
+		srcCtrs:  srcPairs,
+		dstCtrs:  dstPairs,
+		srcStyle: shapeStyleForMorph(e),
+		dstStyle: shapeStyleForMorph(e),
+	}, true
+}
+
+func applyTextMorphStep(tm *textMorphAnim, u float64) {
+	e := tm.E
+	e.MorphContours = lerpLoops(tm.srcCtrs, tm.dstCtrs, u)
+	col := entityColor(e)
+	op := e.fnum("opacity")
+	if op == 0 {
+		op = 1
+	}
+	e.MorphHasFill = col.A*op > 1e-6
+	e.MorphFill = Color{R: col.R, G: col.G, B: col.B, A: col.A * op}
+	e.MorphHasStroke = false
+	e.MorphStrokeW = 0
+}
+
+func clearTextMorph(e *Entity) {
+	e.MorphContours = nil
+	e.MorphHasFill = false
+	e.MorphHasStroke = false
+	e.MorphStrokeW = 0
+	e.layoutCache = nil
+	e.layoutKey = ""
 }
 
 func (rt *Runtime) fillWarpArrow(a *Anim, ref Ref) {
@@ -2048,12 +2200,12 @@ func (rt *Runtime) expandMorph(row Row, w winState, mk func(from, to float64, eb
 			rt.clearPost(srcOpRef.Key())
 			outlineMorph = srcMove != nil && canOutline(srcMove.Type) && canOutline(dst.Type)
 			if outlineMorph {
-				sc := morphContours(srcMove)
-				dc := morphContours(dst)
+				sc := morphLoops(srcMove)
+				dc := morphLoops(dst)
 				if len(sc) == 0 || len(dc) == 0 {
 					outlineMorph = false
 				} else {
-					srcCtrs, dstCtrs = buildMorphPairs(sc, dc, 192)
+					srcCtrs, dstCtrs = matchLoops(sc, dc, morphSamples)
 				}
 			}
 			if outlineMorph {
@@ -2079,62 +2231,8 @@ func (rt *Runtime) expandMorph(row Row, w winState, mk func(from, to float64, eb
 		a.Update = func(a *Anim, rt *Runtime, u float64) {
 			s0, _ := asFloat(a.start[0])
 			if outlineMorph && srcMove != nil && len(srcCtrs) == len(dstCtrs) && len(srcCtrs) > 0 {
-				ctrs := make([][]Vec, len(srcCtrs))
-				for ci := range srcCtrs {
-					sc, dc := srcCtrs[ci], dstCtrs[ci]
-					pc := make([]Vec, len(sc))
-					for i := range pc {
-						pc[i] = Vec{
-							lerp(sc[i][0], dc[i][0], u),
-							lerp(sc[i][1], dc[i][1], u),
-							lerp(sc[i][2], dc[i][2], u),
-						}
-					}
-					ctrs[ci] = pc
-				}
-				srcMove.MorphContours = ctrs
-				blend := Color{
-					R: lerp(srcShapeStyle.EffectiveColor.R, dstShapeStyle.EffectiveColor.R, u),
-					G: lerp(srcShapeStyle.EffectiveColor.G, dstShapeStyle.EffectiveColor.G, u),
-					B: lerp(srcShapeStyle.EffectiveColor.B, dstShapeStyle.EffectiveColor.B, u),
-					A: 1,
-				}
-				srcMove.MorphStroke = Color{
-					R: blend.R,
-					G: blend.G,
-					B: blend.B,
-					A: lerp(srcShapeStyle.StrokeA, dstShapeStyle.StrokeA, u),
-				}
-				// Native stroke handling (manim interpolate_color lerps
-				// stroke_width): the outline width itself grows from the source
-				// to the target. Text endpoints have width 0, so text→text never
-				// strokes and text→shape grows the outline in smoothly — no more
-				// faking a stroke from the fill colour, which bolded the glyphs.
-				srcMove.MorphStrokeW = lerp(srcShapeStyle.StrokeW, dstShapeStyle.StrokeW, u)
-				srcMove.MorphHasStroke = srcMove.MorphStrokeW > 1e-6 && srcMove.MorphStroke.A > 1e-6
-				fillA := lerp(srcShapeStyle.FillA, dstShapeStyle.FillA, u)
-				srcPremulR := srcShapeStyle.FillColor.R * srcShapeStyle.FillA
-				srcPremulG := srcShapeStyle.FillColor.G * srcShapeStyle.FillA
-				srcPremulB := srcShapeStyle.FillColor.B * srcShapeStyle.FillA
-				dstPremulR := dstShapeStyle.FillColor.R * dstShapeStyle.FillA
-				dstPremulG := dstShapeStyle.FillColor.G * dstShapeStyle.FillA
-				dstPremulB := dstShapeStyle.FillColor.B * dstShapeStyle.FillA
-				fillR := dstShapeStyle.FillColor.R
-				fillG := dstShapeStyle.FillColor.G
-				fillB := dstShapeStyle.FillColor.B
-				if fillA > 1e-6 {
-					fillR = lerp(srcPremulR, dstPremulR, u) / fillA
-					fillG = lerp(srcPremulG, dstPremulG, u) / fillA
-					fillB = lerp(srcPremulB, dstPremulB, u) / fillA
-				}
-				srcMove.MorphHasFill = true
-				srcMove.MorphFill = Color{
-					R: fillR,
-					G: fillG,
-					B: fillB,
-					A: fillA,
-				}
-				srcMove.MorphHasFill = srcMove.MorphFill.A > 1e-6
+				srcMove.MorphContours = lerpLoops(srcCtrs, dstCtrs, u)
+				morphStyleAt(srcShapeStyle, dstShapeStyle, u).apply(srcMove)
 				srcOpRef.Set(s0)
 				dstOpRef.Set(0.0)
 				if u >= 1 {

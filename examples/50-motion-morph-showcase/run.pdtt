@@ -6,47 +6,56 @@ center: [0, -0.62]
 circle_x: 1 / cosh(u)
 circle_y: sinh(u) / cosh(u)
 
-text("Один параметр u может жить на двух кривых.") intro:
+text intro:
+  text: "Один параметр u может жить на двух кривых."
   at: [0, 3.08]
   scale: 0.62
   color: color.white
 
-text("Начнем с гиперболы.") hyper_note:
+text hyper_note:
+  text: "Начнем с гиперболы."
   at: [0, 3.08]
   scale: 0.68
   color: color.green
 
-typst("H(u) = (cosh(u), sinh(u))") hyper_formula:
+typst hyper_formula:
+  text: "H(u) = (cosh(u), sinh(u))"
   at: [0, 3.08]
   scale: 0.68
   color: color.green
 
-text("Функция Гудермана превращает u в угол.") gd_note:
+text gd_note:
+  text: "Функция Гудермана превращает u в угол."
   at: [0, 3.08]
   scale: 0.62
   color: color.yellow
 
-text("Берем высоту sinh(u) с гиперболы и переносим ее на касательную x = 1.") height_note:
+text height_note:
+  text: "Берем высоту sinh(u) с гиперболы и переносим ее на касательную x = 1."
   at: [0, 3.08]
   scale: 0.52
   color: color.orange
 
-text("Луч через эту высоту пересекает круг в точке угла gd(u).") ray_note:
+text ray_note:
+  text: "Луч через эту высоту пересекает круг в точке угла gd(u)."
   at: [0, 3.08]
   scale: 0.56
   color: color.yellow
 
-typst("sin(\"gd\"(u)) = sinh(u)/cosh(u),  cos(\"gd\"(u)) = 1/cosh(u)") gd_formula:
+typst gd_formula:
+  text: "sin(\"gd\"(u)) = sinh(u)/cosh(u),  cos(\"gd\"(u)) = 1/cosh(u)"
   at: [0, 3.08]
   scale: 0.48
   color: color.yellow
 
-text("Теперь двигаем только u.") motion_note:
+text motion_note:
+  text: "Теперь двигаем только u."
   at: [0, 3.08]
   scale: 0.68
   color: color.white
 
-text("Один u: гипербола дает высоту, а круг показывает связанный угол.") final_note:
+text final_note:
+  text: "Один u: гипербола дает высоту, а круг показывает связанный угол."
   at: [0, 3.08]
   scale: 0.52
   color: color.white
@@ -106,12 +115,14 @@ path tangent_ray:
   stroke.color: color.yellow @ 86%
   stroke.end: arrow
 
-text("та же высота sinh(u)") height_label:
+text height_label:
+  text: "та же высота sinh(u)"
   at: ax.point(2.05, sinh(u) + 0.28)
   scale: 0.33
   color: color.orange
 
-text("тот же луч") ray_label:
+text ray_label:
+  text: "тот же луч"
   at: ax.point(1.26, 1.52)
   scale: 0.34
   color: color.yellow

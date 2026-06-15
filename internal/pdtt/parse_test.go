@@ -187,34 +187,141 @@ func TestDerivedShapeTypesAreRejected(t *testing.T) {
 	}
 }
 
-func TestConstructorStyleTextRecords(t *testing.T) {
-	rt := compileScene(t, `scene ctor_text
-
+func TestTextTypstConstructorSyntaxRejected(t *testing.T) {
+	for _, src := range []string{
+		`scene bad_text
 text("plain") label:
   at: [0, 0]
-
+`,
+		`scene bad_typst
 typst("x^2 + y^2") formula:
-  at: [1, 0]
-`)
-	label := oneEntity(t, rt, "label")
-	if label.Type != "text" || label.fstr("text") != "plain" {
-		t.Fatalf("label = type %q text %q, want text/plain", label.Type, label.fstr("text"))
-	}
-	formula := oneEntity(t, rt, "formula")
-	if formula.Type != "typst" || formula.fstr("text") != "x^2 + y^2" {
-		t.Fatalf("formula = type %q text %q, want typst/x^2 + y^2", formula.Type, formula.fstr("text"))
+  at: [0, 0]
+`,
+		`scene bad_paren
+text("a) b") label:
+  at: [0, 0]
+`,
+	} {
+		_, err := ParseFile(src)
+		if err == nil {
+			t.Fatalf("ParseFile(%q) succeeded, want constructor syntax error", src)
+		}
+		if !strings.Contains(err.Error(), "constructor syntax is not supported") {
+			t.Fatalf("ParseFile(%q) error = %q, want constructor rejection", src, err)
+		}
 	}
 }
 
-func TestConstructorStyleTextWithParenInString(t *testing.T) {
-	rt := compileScene(t, `scene ctor_paren
+func TestTextFieldMorphUsesOutline(t *testing.T) {
+	rt := compileScene(t, `scene text_field_morph
 
-text("a) b") label:
+text label:
+  text: "circle{radius: 0.5}"
   at: [0, 0]
+  scale: 1.2
+  color: color.white
+
+| 1s | smooth
+| label.text -> "ellipse{rx: 1, ry: 0.5}"
 `)
+	if err := rt.Step(0.5); err != nil {
+		t.Fatal(err)
+	}
 	label := oneEntity(t, rt, "label")
-	if label.Type != "text" || label.fstr("text") != "a) b" {
-		t.Fatalf("label = type %q text %q, want text/%q", label.Type, label.fstr("text"), "a) b")
+	if len(label.MorphContours) == 0 {
+		t.Fatal("expected outline morph contours during text field tween")
+	}
+	if label.fstr("text") != "circle{radius: 0.5}" {
+		t.Fatalf("text = %q during morph, want source until readable snap", label.fstr("text"))
+	}
+	if err := rt.Step(1.0); err != nil {
+		t.Fatal(err)
+	}
+	if label.fstr("text") != "ellipse{rx: 1, ry: 0.5}" {
+		t.Fatalf("text = %q after morph, want destination string", label.fstr("text"))
+	}
+	if len(label.MorphContours) != 0 {
+		t.Fatal("expected morph contours cleared after tween")
+	}
+}
+
+func TestTextMorphEaseOutSettlesBeforeSmooth(t *testing.T) {
+	const dest = "ellipse{rx: 1, ry: 0.5}"
+	const src = `scene text_ease
+
+text label:
+  text: "circle{radius: 0.5}"
+  at: [0, 0]
+  scale: 1.2
+  color: color.white
+
+| 1s | smooth
+| ease_out | label.text -> "` + dest + `"
+`
+	rtOut := compileScene(t, src)
+	rtSmooth := compileScene(t, strings.Replace(src, "ease_out", "smooth", 1))
+
+	readable := func(rt *Runtime) bool {
+		label := oneEntity(t, rt, "label")
+		return label.fstr("text") == dest && len(label.MorphContours) == 0
+	}
+	// ease_out(0.66) ≈ 0.88; smooth(0.66) ≈ 0.47 — only ease_out should be readable yet.
+	if err := rtOut.Step(0.66); err != nil {
+		t.Fatal(err)
+	}
+	if err := rtSmooth.Step(0.66); err != nil {
+		t.Fatal(err)
+	}
+	if !readable(rtOut) {
+		t.Fatal("ease_out should commit readable text before smooth at 66% clock")
+	}
+	if readable(rtSmooth) {
+		t.Fatal("smooth should still be morphing outlines at 66% clock")
+	}
+}
+
+func TestTextMorphEarlyReadableCommit(t *testing.T) {
+	const dest = "ellipse{rx: 1, ry: 0.5}"
+	rt := compileScene(t, `scene text_readable
+
+text label:
+  text: "circle{radius: 0.5}"
+  at: [0, 0]
+  scale: 1.2
+  color: color.white
+
+| 1s | smooth
+| ease_out | label.text -> "`+dest+`"
+`)
+	// ease_out(0.7) ≈ 0.91 ≥ textMorphReadU — crisp destination text before window ends.
+	if err := rt.Step(0.7); err != nil {
+		t.Fatal(err)
+	}
+	label := oneEntity(t, rt, "label")
+	if label.fstr("text") != dest {
+		t.Fatalf("text = %q at 70%% clock, want early readable %q", label.fstr("text"), dest)
+	}
+	if len(label.MorphContours) != 0 {
+		t.Fatal("expected morph contours cleared once readable")
+	}
+	if err := rt.Step(1.0); err != nil {
+		t.Fatal(err)
+	}
+	if label.fstr("text") != dest {
+		t.Fatalf("text = %q after tween, want %q", label.fstr("text"), dest)
+	}
+}
+
+func TestTypstRecordCanUseTextField(t *testing.T) {
+	rt := compileScene(t, `scene typst_field
+
+typst formula:
+  text: "x^2 + y^2"
+  at: [1, 0]
+`)
+	formula := oneEntity(t, rt, "formula")
+	if formula.Type != "typst" || formula.fstr("text") != "x^2 + y^2" {
+		t.Fatalf("formula = type %q text %q, want typst/x^2 + y^2", formula.Type, formula.fstr("text"))
 	}
 }
 

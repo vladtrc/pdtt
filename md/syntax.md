@@ -76,7 +76,7 @@ Order within a line is free.
 | Cell | Effect |
 |---|---|
 | `a-b` | window `(from, to)`; either side optional: `-.5` = `0-.5`, `.5-` = `.5-1`. Bare `-` is an error. |
-| `linear` `smooth` `ease_in` `ease_out` `ease_in_out` | easing |
+| `linear` `smooth` `ease_in` `ease_out` `ease_out_cubic` `ease_in_out` | easing |
 | `morph` `fade_in` `draw` `write` | transition strategy |
 | `after r` `lag d` `stagger d` | window offsets (`stagger` is per-element) |
 | `by name` `by pos` | pairing for structural transitions |

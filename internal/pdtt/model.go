@@ -661,6 +661,16 @@ func (s *Scope) Eval(e Expr) (Value, error) {
 		return indexValue(x, int(fi))
 	case CallE:
 		return s.evalCall(v)
+	case GeomE:
+		fields := map[string]Value{}
+		for _, fd := range v.Fields {
+			val, err := s.Eval(fd.E)
+			if err != nil {
+				return nil, err
+			}
+			fields[fd.Name] = val
+		}
+		return GeomVal{Name: v.Name, Fields: fields}, nil
 	case FoldE:
 		return nil, fmt.Errorf("fold expression outside a data column")
 	case SnapshotE:
@@ -1359,7 +1369,7 @@ func entitySize(e *Entity) (w, h float64) {
 		return 2 * r * scale, 2 * r * scale
 	case "path":
 		if f, ok := e.Fields["points"]; ok && f.Val != nil {
-			pts, err := asPoints(f.Val)
+			pts, err := resolvePoints(f.Val)
 			if err == nil && len(pts) > 0 {
 				minX, maxX := pts[0][0], pts[0][0]
 				minY, maxY := pts[0][1], pts[0][1]

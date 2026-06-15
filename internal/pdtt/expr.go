@@ -140,7 +140,7 @@ func lexExpr(src string) ([]token, error) {
 					continue
 				}
 			}
-			if strings.ContainsRune("+-*/%()[],.@<>?:", rune(c)) {
+			if strings.ContainsRune("+-*/%()[]{},.@<>?:", rune(c)) {
 				ts = append(ts, token{kind: "op", s: string(c)})
 				i++
 				continue
@@ -366,6 +366,16 @@ func (p *exprParser) parsePostfix() (Expr, error) {
 				}
 			}
 			e = CallE{Fn: e, Args: args}
+		case p.eatOp("{"):
+			fields, err := p.parseBraceFields()
+			if err != nil {
+				return nil, err
+			}
+			id, ok := e.(Ident)
+			if !ok {
+				return nil, fmt.Errorf("geometry constructor `{...}` must follow a name")
+			}
+			e = GeomE{Name: string(id), Fields: fields}
 		case p.eatOp("["):
 			if p.eatOp("*") {
 				// [*] or [* as name]
@@ -467,6 +477,35 @@ func (p *exprParser) parsePrimary() (Expr, error) {
 	return nil, fmt.Errorf("unexpected token %q", t.s)
 }
 
+func (p *exprParser) parseBraceFields() ([]FieldDef, error) {
+	var fields []FieldDef
+	if p.eatOp("}") {
+		return fields, nil
+	}
+	for {
+		t := p.peek()
+		if t == nil || t.kind != "id" {
+			return nil, fmt.Errorf("expected field name in `{...}`")
+		}
+		name := t.s
+		p.pos++
+		if !p.eatOp(":") {
+			return nil, fmt.Errorf("expected `:` after %q in `{...}`", name)
+		}
+		e, err := p.parseCond()
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, FieldDef{Name: name, E: e})
+		if p.eatOp("}") {
+			return fields, nil
+		}
+		if !p.eatOp(",") {
+			return nil, fmt.Errorf("expected `,` or `}` in `{...}`")
+		}
+	}
+}
+
 // exprDeps collects the identifier paths an expression reads, for the
 // liveness pass. Paths are reported as "name" or "name.field"; deeper or
 // indexed paths collapse to the entity name (conservative: depending on the
@@ -491,6 +530,10 @@ func exprDeps(e Expr, out map[string]bool) {
 		exprDeps(v.Fn, out)
 		for _, a := range v.Args {
 			exprDeps(a, out)
+		}
+	case GeomE:
+		for _, fd := range v.Fields {
+			exprDeps(fd.E, out)
 		}
 	case BinE:
 		exprDeps(v.L, out)

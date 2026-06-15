@@ -167,10 +167,13 @@ func outlinePoints(e *Entity, n int) []Vec {
 	switch e.Type {
 	case "path":
 		pathPts := pathPoints(e, tf)
-		if e.fnum("closed") == 0 || len(pathPts) < 2 {
+		if len(pathPts) < 2 {
 			return nil
 		}
-		return resampleClosed(pathPts, n)
+		if e.fnum("closed") != 0 {
+			return resampleClosed(pathPts, n)
+		}
+		return resampleOpen(pathPts, n)
 	case "dot":
 		r := e.fnum("radius")
 		if r == 0 {
@@ -245,25 +248,6 @@ func sampleContoursByLength(contours [][]Vec, n int) []Vec {
 	return out
 }
 
-// morphContours returns an entity's closed outline contours in world space,
-// keeping glyphs and their counters (holes) as SEPARATE contours. Shapes are a
-// single analytic ring.
-func morphContours(e *Entity) [][]Vec {
-	if isTextType(e.Type) {
-		var out [][]Vec
-		for _, ct := range textOutlineContours(e) {
-			if len(ct) >= 2 {
-				out = append(out, ct)
-			}
-		}
-		return out
-	}
-	if pts := outlinePoints(e, 192); len(pts) >= 2 {
-		return [][]Vec{pts}
-	}
-	return nil
-}
-
 // resampleClosed re-parameterises a closed contour to exactly n points spaced by
 // cumulative arc length, so two contours can be lerped point-for-point.
 func resampleClosed(contour []Vec, n int) []Vec {
@@ -307,6 +291,56 @@ func resampleClosed(contour []Vec, n int) []Vec {
 	return out
 }
 
+// resampleOpen re-parameterises an open polyline to exactly n points by arc length.
+func resampleOpen(contour []Vec, n int) []Vec {
+	out := make([]Vec, n)
+	if n <= 0 || len(contour) == 0 {
+		return out
+	}
+	if len(contour) == 1 {
+		for i := range out {
+			out[i] = contour[0]
+		}
+		return out
+	}
+	type seg struct {
+		a, b Vec
+		l    float64
+	}
+	var segs []seg
+	total := 0.0
+	for i := 0; i < len(contour)-1; i++ {
+		a, b := contour[i], contour[i+1]
+		l := math.Hypot(b[0]-a[0], b[1]-a[1])
+		if l <= 1e-12 {
+			continue
+		}
+		segs = append(segs, seg{a, b, l})
+		total += l
+	}
+	if len(segs) == 0 || total <= 1e-12 {
+		for i := range out {
+			out[i] = contour[0]
+		}
+		return out
+	}
+	idx, acc := 0, 0.0
+	for i := 0; i < n; i++ {
+		target := total * float64(i) / float64(n-1)
+		for idx < len(segs)-1 && acc+segs[idx].l < target {
+			acc += segs[idx].l
+			idx++
+		}
+		s := segs[idx]
+		u := 0.0
+		if s.l > 1e-12 {
+			u = (target - acc) / s.l
+		}
+		out[i] = Vec{lerp(s.a[0], s.b[0], u), lerp(s.a[1], s.b[1], u), lerp(s.a[2], s.b[2], u)}
+	}
+	return out
+}
+
 func contourCentroid(c []Vec) Vec {
 	if len(c) == 0 {
 		return Vec{}
@@ -336,79 +370,12 @@ func pointContour(at Vec, n int) []Vec {
 	return out
 }
 
-// alignContour reorients/rotates d (already same length as s) to minimise
-// twisting against s: match winding, then start at the vertex nearest s[0].
-func alignContour(s, d []Vec) []Vec {
-	if len(s) != len(d) || len(d) == 0 {
-		return d
-	}
-	if contourSignedArea(s)*contourSignedArea(d) < 0 {
-		r := make([]Vec, len(d))
-		for i := range d {
-			r[i] = d[len(d)-1-i]
-		}
-		d = r
-	}
-	best, bestDist := 0, math.MaxFloat64
-	for k := range d {
-		dx, dy := d[k][0]-s[0][0], d[k][1]-s[0][1]
-		if dd := dx*dx + dy*dy; dd < bestDist {
-			bestDist, best = dd, k
-		}
-	}
-	if best == 0 {
-		return d
-	}
-	out := make([]Vec, len(d))
-	for i := range d {
-		out[i] = d[(i+best)%len(d)]
+func reverseContour(c []Vec) []Vec {
+	out := make([]Vec, len(c))
+	for i := range c {
+		out[i] = c[len(c)-1-i]
 	}
 	return out
-}
-
-// buildMorphPairs returns two contour lists of equal shape: matched glyph/hole
-// contours are paired by nearest centroid; a glyph with no partner is paired
-// with a degenerate point at its own centroid, so unmatched source glyphs shrink
-// away in place and unmatched destination glyphs grow from a point in place.
-func buildMorphPairs(src, dst [][]Vec, n int) (sOut, dOut [][]Vec) {
-	S := make([][]Vec, len(src))
-	for i, c := range src {
-		S[i] = resampleClosed(c, n)
-	}
-	D := make([][]Vec, len(dst))
-	for i, c := range dst {
-		D[i] = resampleClosed(c, n)
-	}
-	usedD := make([]bool, len(D))
-	for i := range S {
-		ci := contourCentroid(S[i])
-		best, bestDist := -1, math.MaxFloat64
-		for j := range D {
-			if usedD[j] {
-				continue
-			}
-			cj := contourCentroid(D[j])
-			dx, dy := ci[0]-cj[0], ci[1]-cj[1]
-			if dd := dx*dx + dy*dy; dd < bestDist {
-				bestDist, best = dd, j
-			}
-		}
-		sOut = append(sOut, S[i])
-		if best >= 0 {
-			usedD[best] = true
-			dOut = append(dOut, alignContour(S[i], D[best]))
-		} else {
-			dOut = append(dOut, pointContour(contourCentroid(S[i]), n))
-		}
-	}
-	for j := range D {
-		if usedD[j] {
-			continue
-		}
-		sOut = append(sOut, pointContour(contourCentroid(D[j]), n))
-		dOut = append(dOut, D[j])
-	}
-	return sOut, dOut
 }
 
 func (r *Renderer) drawMorphPath(dc *gg.Context, c cam, e *Entity, tf Transform) {
@@ -416,9 +383,11 @@ func (r *Renderer) drawMorphPath(dc *gg.Context, c cam, e *Entity, tf Transform)
 		return
 	}
 	op := tf.Opacity
-	// Trace every contour as its own subpath so glyph counters (the holes in
-	// `x`, `r`, the digit `2`) and separate glyphs stay distinct — drawn with
-	// even-odd fill exactly like static text, instead of one flattened ring.
+	// Every morph contour is a closed loop (open paths are folded there-and-back
+	// in morphLoops), so each is traced as its own closed subpath. That keeps
+	// glyph counters (the holes in `x`, `r`, the digit `2`) and separate glyphs
+	// distinct under even-odd fill, and — because openness is geometric, not a
+	// flag — there is never a chord snapping across a once-open shape.
 	trace := func() {
 		for _, contour := range e.MorphContours {
 			for i, p := range contour {
@@ -778,7 +747,7 @@ func pathPoints(e *Entity, tf Transform) []Vec {
 	if !ok || f.Val == nil {
 		return nil
 	}
-	pts, err := asPoints(f.Val)
+	pts, err := resolvePoints(f.Val)
 	if err != nil || len(pts) == 0 {
 		return nil
 	}

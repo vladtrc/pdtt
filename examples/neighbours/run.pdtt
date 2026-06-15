@@ -8,12 +8,14 @@ frame frame:
   at: [0, 0]
   w: 9.4
 
-text("Ссылки на соседний элемент family") title:
+text title:
+  text: "Ссылки на соседний элемент family"
   at: [0, 3.0]
   scale: 0.5
   color: color.white
 
-text("каждая точка связана с предыдущей") subtitle:
+text subtitle:
+  text: "каждая точка связана с предыдущей"
   at: [0, 2.55]
   scale: 0.36
   color: color.light_gray

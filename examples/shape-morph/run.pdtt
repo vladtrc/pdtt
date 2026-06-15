@@ -1,0 +1,155 @@
+scene shape_morph
+# Showcase: stick → arrowhead (stroke.end) → every geometry constructor.
+# Each step varies stroke color, fill (on/off), and size.
+
+path stick:
+  at: [0, 0]
+  points: [[-1.8, 0], [1.8, 0]]
+  stroke.color: color.white
+  stroke.width: 0.04
+  draw: 0
+
+path circ:
+  at: [0, 0]
+  points: circle{radius: 0.85}
+  closed: 1
+  stroke.color: color.gold
+  stroke.width: 0.04
+
+path circ_f:
+  at: [0, 0]
+  points: circle{radius: 1.35}
+  closed: 1
+  stroke.color: color.white
+  stroke.width: 0.035
+  fill.color: color.cyan @ 30%
+
+path ell:
+  at: [0, 0]
+  points: ellipse{rx: 1.55, ry: 0.85}
+  closed: 1
+  stroke.color: color.pink
+  stroke.width: 0.04
+
+path ell_f:
+  at: [0, 0]
+  points: ellipse{rx: 1.15, ry: 1.55}
+  closed: 1
+  stroke.color: color.gold
+  stroke.width: 0.035
+  fill.color: color.orange @ 40%
+
+path arc_p:
+  at: [0, 0]
+  points: arc{radius: 1.45, start: 0, end: math.pi / 2}
+  closed: 0
+  stroke.color: color.white
+  stroke.width: 0.04
+
+path sector_p:
+  at: [0, 0]
+  points: sector{radius: 1.45, start: 0, end: math.pi / 3}
+  closed: 1
+  stroke.color: color.white
+  stroke.width: 0.035
+  fill.color: color.yellow @ 35%
+
+path rect_p:
+  at: [0, 0]
+  points: rect{w: 2.2, h: 1.15}
+  closed: 1
+  stroke.color: color.gold
+  stroke.width: 0.04
+
+path rect_f:
+  at: [0, 0]
+  points: rect{w: 1.65, h: 1.65, corner_radius: 0.14}
+  closed: 1
+  stroke.color: color.white
+  stroke.width: 0.035
+  fill.color: color.pink @ 45%
+
+path poly:
+  at: [0, 0]
+  points: regular_polygon{sides: 6, radius: 1.25, angle: math.pi / 6}
+  closed: 1
+  stroke.color: color.cyan
+  stroke.width: 0.04
+
+path poly_f:
+  at: [0, 0]
+  points: regular_polygon{sides: 5, radius: 1.45, angle: 0}
+  closed: 1
+  stroke.color: color.gold
+  stroke.width: 0.035
+  fill.color: color.green @ 30%
+
+text caption:
+  text: "[[-1.8, 0], [1.8, 0]]"
+  at: [0, 2.55]
+  scale: 0.52
+  color: color.white
+
+| 0.6s | smooth
+| stick{draw: 0} -> stick
+| caption{opacity: 0} -> caption
+
+| 0.55s | smooth
+| stick.stroke.end -> arrow
+| -.8 | stick.stroke.color -> color.gold
+| -.3 | caption.text -> "stroke.end -> arrow"
+| caption.color -> color.gold
+
+| 2.55s | smooth
+| -.8 | morph | stick -> circ
+| -.3 | caption.text -> "circle{radius: 0.85}"
+| caption.color -> color.gold
+
+| 2.55s | smooth
+| -.8 | morph | circ -> circ_f
+| -.3 | caption.text -> "circle{radius: 1.35}"
+| caption.color -> color.white
+
+| 2.55s | smooth
+| -.8 | morph | circ_f -> ell
+| -.3 | caption.text -> "ellipse{rx: 1.55, ry: 0.85}"
+| caption.color -> color.pink
+
+| 2.55s | smooth
+| -.8 | morph | ell -> ell_f
+| -.3 | caption.text -> "ellipse{rx: 1.15, ry: 1.55}"
+| caption.color -> color.gold
+
+| 2.55s | smooth
+| -.8 | morph | ell_f -> arc_p
+| -.3 | caption.text -> "arc{radius: 1.45, start: 0, end: math.pi / 2}"
+| caption.color -> color.white
+
+| 2.55s | smooth
+| -.8 | morph | arc_p -> sector_p
+| -.3 | caption.text -> "sector{radius: 1.45, start: 0, end: math.pi / 3}"
+| caption.color -> color.white
+
+| 2.55s | smooth
+| -.8 | morph | sector_p -> rect_p
+| -.3 | caption.text -> "rect{w: 2.2, h: 1.15}"
+| caption.color -> color.gold
+
+| 2.55s | smooth
+| -.8 | morph | rect_p -> rect_f
+| -.3 | caption.text -> "rect{w: 1.65, h: 1.65, corner_radius: 0.14}"
+| caption.color -> color.white
+
+| 2.55s | smooth
+| -.8 | morph | rect_f -> poly
+| -.3 | caption.text -> "regular_polygon{sides: 6, radius: 1.25, angle: math.pi / 6}"
+| caption.color -> color.cyan
+
+| 2.55s | smooth
+| -.8 | morph | poly -> poly_f
+| -.3 | caption.text -> "regular_polygon{sides: 5, radius: 1.45, angle: 0}"
+| caption.color -> color.gold
+
+| 0.6s | smooth
+| poly_f.opacity -> 0
+| caption.opacity -> 0

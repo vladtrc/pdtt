@@ -72,4 +72,4 @@ Flags:
 - `examples/20-dynamic-point-tween` demonstrates a tween between two moving points.
 - Records start inactive. Use `obj{field: start} -> obj` for same-object entry and `morph` to activate a target.
 - Text rendering uses `typst` (`typst compile -f svg - -`) for native glyph outlines; if `typst` is absent on `PATH`, pdtt falls back to legacy freetype text rendering.
-- Text records can be written as `text("plain") name:`; math/Typst records can be written as `typst("x^2 + y^2") name:`.
+- Text records use `text name:` with a `text:` field; math/Typst records use `typst name:` the same way.

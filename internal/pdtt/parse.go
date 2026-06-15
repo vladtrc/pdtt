@@ -119,7 +119,8 @@ var (
 )
 
 var easeNames = map[string]bool{
-	"linear": true, "smooth": true, "ease_in": true, "ease_out": true, "ease_in_out": true,
+	"linear": true, "smooth": true, "ease_in": true, "ease_out": true,
+	"ease_out_cubic": true, "ease_in_out": true,
 }
 
 var transitionNames = map[string]bool{
@@ -295,24 +296,13 @@ func balancedClosingParen(s string, open int) (close int, ok bool) {
 }
 
 func parseCtorRecord(trimmed string, ln int) (*RecordStmt, error) {
-	typ, argText, name, ok := parseCtorRecordHeader(trimmed)
-	if !ok {
-		return nil, nil
+	if _, _, _, ok := parseCtorRecordHeader(trimmed); ok {
+		return nil, fmt.Errorf(
+			"line %d: text/typst constructor syntax is not supported; declare `text name:` or `typst name:` with a `text:` field",
+			ln,
+		)
 	}
-	e, err := ParseExpr(argText)
-	if err != nil {
-		return nil, fmt.Errorf("line %d: %v", ln, err)
-	}
-	return &RecordStmt{
-		Type: typ,
-		Name: name,
-		Fields: []FieldDef{{
-			Name: "text",
-			E:    e,
-			Line: ln,
-		}},
-		Line: ln,
-	}, nil
+	return nil, nil
 }
 
 // looksLikeFlatFieldLine reports whether a column-0 line resembles a record
@@ -393,7 +383,8 @@ func ParseFile(src string) ([]Stmt, error) {
 		}
 	}
 
-	for _, ll := range lines {
+	for i := 0; i < len(lines); i++ {
+		ll := lines[i]
 		ln := ll.Line
 		line := ll.Text
 		trimmed := strings.TrimSpace(line)
@@ -457,11 +448,12 @@ func ParseFile(src string) ([]Stmt, error) {
 				if curFamilyMember == nil {
 					return nil, fmt.Errorf("line %d: indented field line without a member header in family", ln)
 				}
-				fd, err := parseFieldLine(trimmed, ln)
+				fd, consumed, err := parseRecordFieldLine(lines, i, depth)
 				if err != nil {
 					return nil, err
 				}
 				curFamilyMember.Fields = append(curFamilyMember.Fields, fd)
+				i += consumed
 				continue
 			}
 		}
@@ -470,11 +462,12 @@ func ParseFile(src string) ([]Stmt, error) {
 			if curRecord == nil {
 				return nil, fmt.Errorf("line %d: indented line outside a record", ln)
 			}
-			fd, err := parseFieldLine(trimmed, ln)
+			fd, consumed, err := parseRecordFieldLine(lines, i, depth)
 			if err != nil {
 				return nil, err
 			}
 			curRecord.Fields = append(curRecord.Fields, fd)
+			i += consumed
 			continue
 		}
 
@@ -605,6 +598,71 @@ func parseFieldLine(s string, ln int) (FieldDef, error) {
 	}
 	fd.E = e
 	return fd, nil
+}
+
+// parseRecordFieldLine parses one record field, consuming extra lines for
+// multiline geometry constructors under `points:`.
+func parseRecordFieldLine(lines []LogicalLine, i int, parentDepth int) (FieldDef, int, error) {
+	ll := lines[i]
+	trimmed := strings.TrimSpace(ll.Text)
+	colon := strings.IndexByte(trimmed, ':')
+	if colon < 0 {
+		return FieldDef{}, 0, fmt.Errorf("line %d: field line missing `:`", ll.Line)
+	}
+	fieldName := strings.TrimSpace(trimmed[:colon])
+	body := strings.TrimSpace(trimmed[colon+1:])
+	if body == "" && i+1 < len(lines) && lines[i+1].Indent > parentDepth {
+		fd, consumed, err := parseMultilineGeomField(lines, i, parentDepth, fieldName)
+		if err != nil {
+			return FieldDef{}, 0, err
+		}
+		return fd, consumed, nil
+	}
+	fd, err := parseFieldLine(trimmed, ll.Line)
+	return fd, 0, err
+}
+
+func parseMultilineGeomField(lines []LogicalLine, i int, parentDepth int, fieldName string) (FieldDef, int, error) {
+	start := lines[i]
+	if i+1 >= len(lines) {
+		return FieldDef{}, 0, fmt.Errorf("line %d: %s: expected geometry constructor", start.Line, fieldName)
+	}
+	header := lines[i+1]
+	if header.Indent <= parentDepth {
+		return FieldDef{}, 0, fmt.Errorf("line %d: %s: expected indented geometry constructor", start.Line, fieldName)
+	}
+	geomDepth := header.Indent
+	geomTrimmed := strings.TrimSpace(header.Text)
+	geomColon := strings.IndexByte(geomTrimmed, ':')
+	if geomColon < 0 {
+		return FieldDef{}, 0, fmt.Errorf("line %d: geometry constructor header missing `:`", header.Line)
+	}
+	geomName := strings.TrimSpace(geomTrimmed[:geomColon])
+	if geomName == "" {
+		return FieldDef{}, 0, fmt.Errorf("line %d: empty geometry constructor name", header.Line)
+	}
+	geomInline := strings.TrimSpace(geomTrimmed[geomColon+1:])
+	if geomInline != "" {
+		return FieldDef{}, 0, fmt.Errorf("line %d: geometry constructor %q: use indented fields, not inline body", header.Line, geomName)
+	}
+	var geomFields []FieldDef
+	j := i + 2
+	for j < len(lines) && lines[j].Indent > geomDepth {
+		fd, err := parseFieldLine(strings.TrimSpace(lines[j].Text), lines[j].Line)
+		if err != nil {
+			return FieldDef{}, 0, err
+		}
+		geomFields = append(geomFields, fd)
+		j++
+	}
+	if len(geomFields) == 0 {
+		return FieldDef{}, 0, fmt.Errorf("line %d: geometry constructor %q has no fields", header.Line, geomName)
+	}
+	return FieldDef{
+		Name: fieldName,
+		E:    GeomE{Name: geomName, Fields: geomFields},
+		Line: start.Line,
+	}, j - i - 1, nil
 }
 
 // parseBlockHeader parses a block header line. The first `|`-cell carries the
