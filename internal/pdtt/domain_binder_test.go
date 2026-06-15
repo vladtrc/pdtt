@@ -114,6 +114,42 @@ roots[val.indices as i]:
 	}
 }
 
+func TestFamilyLocalBindingsAreSharedAndLive(t *testing.T) {
+	rt := compileScene(t, `scene family_local_bindings
+
+scale: 1
+
+roots[0..2 as i]:
+  a: i + 1
+  x: scale * a
+
+  dot p:
+    at: [x, 0]
+
+  arrow ray:
+    from: [0, 0]
+    to: [x, 0]
+
+| 1s | linear
+| scale -> 3
+`)
+
+	if err := rt.Step(0.5); err != nil {
+		t.Fatalf("Step(0.5): %v", err)
+	}
+	for _, key := range []int{0, 1} {
+		want := float64(key+1) * 2
+		p := oneEntity(t, rt, familyMemberName("roots", key, "p"))
+		ray := oneEntity(t, rt, familyMemberName("roots", key, "ray"))
+		if got := p.fvec("at")[0]; got != want {
+			t.Fatalf("roots[%d].p.at.x = %v, want %v", key, got, want)
+		}
+		if got := ray.fvec("to")[0]; got != want {
+			t.Fatalf("roots[%d].ray.to.x = %v, want %v", key, got, want)
+		}
+	}
+}
+
 func TestSnapshotColonBindingFreezesRecord(t *testing.T) {
 	rt := compileScene(t, `scene snapshot_freeze
 

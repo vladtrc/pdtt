@@ -398,8 +398,9 @@ var namespaces = map[string]namespace{
 // ---------- scope & eval ----------
 
 type Scope struct {
-	rt    *Runtime
-	binds map[string]Value
+	rt         *Runtime
+	binds      map[string]Value
+	localStack map[string]bool
 }
 
 func (s *Scope) with(name string, v Value) *Scope {
@@ -408,7 +409,7 @@ func (s *Scope) with(name string, v Value) *Scope {
 		nb[k] = x
 	}
 	nb[name] = v
-	return &Scope{rt: s.rt, binds: nb}
+	return &Scope{rt: s.rt, binds: nb, localStack: s.localStack}
 }
 
 type boundMethod struct {
@@ -427,6 +428,9 @@ func (s *Scope) lookup(name string) (Value, error) {
 			// Check the ItVal.Cols for named bind variables (family binder, data columns)
 			if it.Cols != nil {
 				if c, ok := it.Cols[name]; ok {
+					if local, ok := c.(FamilyLocalBinding); ok {
+						return s.evalFamilyLocal(local)
+					}
 					return c, nil
 				}
 			}
@@ -462,6 +466,19 @@ func (s *Scope) lookup(name string) (Value, error) {
 	}
 	s.rt.warnOnce("unresolved name `" + name + "` (treated as nil)")
 	return nil, nil
+}
+
+func (s *Scope) evalFamilyLocal(local FamilyLocalBinding) (Value, error) {
+	if s.localStack == nil {
+		s.localStack = map[string]bool{}
+	}
+	if s.localStack[local.Name] {
+		return nil, fmt.Errorf("cycle in family-local binding %q", local.Name)
+	}
+	s.localStack[local.Name] = true
+	defer delete(s.localStack, local.Name)
+
+	return (&Scope{rt: s.rt, binds: s.binds, localStack: s.localStack}).Eval(local.E)
 }
 
 func (s *Scope) Eval(e Expr) (Value, error) {

@@ -599,7 +599,18 @@ func (rt *Runtime) addFamily(v FamilyStmt, scope *Scope) error {
 
 	// Build member name list
 	var memberNames []string
+	names := map[string]string{v.BindVar: "family bind variable"}
+	for _, local := range v.Locals {
+		if prev, exists := names[local.Name]; exists {
+			return fmt.Errorf("line %d: family local %q conflicts with %s", local.Line, local.Name, prev)
+		}
+		names[local.Name] = "family local"
+	}
 	for _, mem := range v.Members {
+		if prev, exists := names[mem.Name]; exists {
+			return fmt.Errorf("line %d: family member %q conflicts with %s", mem.Line, mem.Name, prev)
+		}
+		names[mem.Name] = "family member"
 		memberNames = append(memberNames, mem.Name)
 	}
 
@@ -635,6 +646,9 @@ func (rt *Runtime) addFamily(v FamilyStmt, scope *Scope) error {
 		// We'll add sibling member references to Cols after all members are created.
 		cols := map[string]Value{
 			v.BindVar: bindVal,
+		}
+		for _, local := range v.Locals {
+			cols[local.Name] = local
 		}
 		itVal := ItVal{
 			Val:  idxVal,
@@ -2437,21 +2451,41 @@ func entityExprDeps(e *Entity, expr Expr) map[string]bool {
 	if !ok {
 		return deps
 	}
-	for dep := range deps {
-		name, field, hasField := strings.Cut(dep, ".")
-		local, ok := it.Cols[name]
-		if !ok {
-			continue
+	seenLocal := map[string]bool{}
+	for {
+		changed := false
+		for dep := range deps {
+			name, field, hasField := strings.Cut(dep, ".")
+			local, ok := it.Cols[name]
+			if !ok {
+				continue
+			}
+			delete(deps, dep)
+			changed = true
+			switch v := local.(type) {
+			case *Entity:
+				if hasField {
+					deps[v.Name+"."+field] = true
+				} else {
+					deps[v.Name] = true
+				}
+			case FamilyLocalBinding:
+				if seenLocal[v.Name] {
+					continue
+				}
+				seenLocal[v.Name] = true
+				localDeps := map[string]bool{}
+				exprDeps(v.E, localDeps)
+				for d := range localDeps {
+					deps[d] = true
+				}
+			default:
+				// Domain bind values and literal locals are constants for this
+				// family instance, so they do not contribute liveness deps.
+			}
 		}
-		member, ok := local.(*Entity)
-		if !ok {
-			continue
-		}
-		delete(deps, dep)
-		if hasField {
-			deps[member.Name+"."+field] = true
-		} else {
-			deps[member.Name] = true
+		if !changed {
+			break
 		}
 	}
 	return deps

@@ -22,6 +22,7 @@ type (
 // FamilyStmt is a plural-record family declared with the domain-binder syntax:
 //
 //	NAME[domainExpr as bindVar]:
+//	  local: expr
 //	  TYPE memberName:
 //	    field: expr
 //	  ...
@@ -29,9 +30,16 @@ type FamilyStmt struct {
 	Name       string
 	DomainE    Expr   // e.g. val.indices or 0..n
 	BindVar    string // e.g. "i"
+	Locals     []FamilyLocalBinding
 	Members    []RecordStmt
 	Line       int
 	baseIndent int // detected from first indented line (parser-internal)
+}
+
+type FamilyLocalBinding struct {
+	Name string
+	E    Expr
+	Line int
 }
 
 type CaptureStmt struct {
@@ -101,13 +109,13 @@ type BlockStmt struct {
 }
 
 var (
-	recordRe  = regexp.MustCompile(`^(\w+) (\w+):$`)
-	captureRe = regexp.MustCompile(`^(\w+)\s*=\s*(.+)$`)
-	colonBindRe  = regexp.MustCompile(`^(\w+)\s*:\s*(.+)$`)        // name: expr  (top-level colon binding)
-	durRe        = regexp.MustCompile(`^(\d*\.?\d+)(s|%)?$`)
-	winRe        = regexp.MustCompile(`^(\d*\.?\d+(?:%|s)?)?-(\d*\.?\d+(?:%|s)?)?$`)
-	foldRe       = regexp.MustCompile(`^scan\((.+) by (\w+)\)$`)
-	timeAmtRe    = regexp.MustCompile(`^(\d*\.?\d+)(s?)$`)
+	recordRe    = regexp.MustCompile(`^(\w+) (\w+):$`)
+	captureRe   = regexp.MustCompile(`^(\w+)\s*=\s*(.+)$`)
+	colonBindRe = regexp.MustCompile(`^(\w+)\s*:\s*(.+)$`) // name: expr  (top-level colon binding)
+	durRe       = regexp.MustCompile(`^(\d*\.?\d+)(s|%)?$`)
+	winRe       = regexp.MustCompile(`^(\d*\.?\d+(?:%|s)?)?-(\d*\.?\d+(?:%|s)?)?$`)
+	foldRe      = regexp.MustCompile(`^scan\((.+) by (\w+)\)$`)
+	timeAmtRe   = regexp.MustCompile(`^(\d*\.?\d+)(s?)$`)
 )
 
 var easeNames = map[string]bool{
@@ -329,9 +337,21 @@ func looksLikeFlatFieldLine(trimmed string) bool {
 	return colonBindRe.MatchString(s)
 }
 
+func parseFamilyLocalBinding(trimmed string, ln int) (*FamilyLocalBinding, error) {
+	m := colonBindRe.FindStringSubmatch(trimmed)
+	if m == nil {
+		return nil, nil
+	}
+	e, err := ParseExpr(m[2])
+	if err != nil {
+		return nil, fmt.Errorf("line %d: %v", ln, err)
+	}
+	return &FamilyLocalBinding{Name: m[1], E: e, Line: ln}, nil
+}
+
 func familyMemberHeaderError(ln int, trimmed string) error {
 	return fmt.Errorf(
-		"line %d: expected member record header inside family block (family blocks may only contain member records like `type name:`; move helpers to top-level globals), got %q",
+		"line %d: expected member record header or local binding inside family block (use `name: expr` for locals or `type name:` for member records), got %q",
 		ln, trimmed,
 	)
 }
@@ -399,9 +419,13 @@ func ParseFile(src string) ([]Stmt, error) {
 			} else if curFamily.baseIndent == 0 {
 				// First indented line in this family: set the base indent level
 				curFamily.baseIndent = depth
-				// This line is a member header
+				// This line is either a family-local binding or a member header.
 				flushFamilyMember()
-				if rec, err := parseCtorRecord(trimmed, ln); err != nil {
+				if local, err := parseFamilyLocalBinding(trimmed, ln); err != nil {
+					return nil, err
+				} else if local != nil {
+					curFamily.Locals = append(curFamily.Locals, *local)
+				} else if rec, err := parseCtorRecord(trimmed, ln); err != nil {
 					return nil, err
 				} else if rec != nil {
 					curFamilyMember = rec
@@ -412,9 +436,13 @@ func ParseFile(src string) ([]Stmt, error) {
 				}
 				continue
 			} else if depth == curFamily.baseIndent {
-				// Same level as member headers: a new member header
+				// Same level as member headers: a new local binding or member header.
 				flushFamilyMember()
-				if rec, err := parseCtorRecord(trimmed, ln); err != nil {
+				if local, err := parseFamilyLocalBinding(trimmed, ln); err != nil {
+					return nil, err
+				} else if local != nil {
+					curFamily.Locals = append(curFamily.Locals, *local)
+				} else if rec, err := parseCtorRecord(trimmed, ln); err != nil {
 					return nil, err
 				} else if rec != nil {
 					curFamilyMember = rec

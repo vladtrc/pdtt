@@ -332,18 +332,27 @@ func TestFlatRecordFieldRequiresIndent(t *testing.T) {
 	}
 }
 
-func TestFamilyLocalBindingRejected(t *testing.T) {
-	_, err := ParseFile(`roots[0..3 as i]:
-  a: i`)
-	if err == nil {
-		t.Fatal("expected parse error for family-local binding")
+func TestFamilyLocalBindingAccepted(t *testing.T) {
+	stmts, err := ParseFile(`roots[0..3 as i]:
+  a: i
+  x: a + 1
+  dot p:
+    at: [x, 0]`)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
 	}
-	msg := err.Error()
-	if !strings.Contains(msg, "member record") {
-		t.Fatalf("error = %q, want mention of member record", err)
+	var fam *FamilyStmt
+	for _, s := range stmts {
+		if f, ok := s.(FamilyStmt); ok {
+			fam = &f
+			break
+		}
 	}
-	if !strings.Contains(msg, "top-level") {
-		t.Fatalf("error = %q, want guidance to use top-level globals", err)
+	if fam == nil {
+		t.Fatal("expected FamilyStmt")
+	}
+	if len(fam.Locals) != 2 {
+		t.Fatalf("family locals = %d, want 2", len(fam.Locals))
 	}
 }
 
@@ -437,11 +446,11 @@ func TestLuxeHeartExample(t *testing.T) {
 		t.Fatalf("read fixture: %v", err)
 	}
 	rt := compileScene(t, string(src))
-	fam := rt.Families["heart_outer"]
+	fam := rt.Families["heart"]
 	if fam == nil {
-		t.Fatal("heart_outer family was not registered")
+		t.Fatal("heart family was not registered")
 	}
-	if fam.N != 72 {
-		t.Fatalf("heart_outer.N = %d, want 72", fam.N)
+	if fam.N != 48 {
+		t.Fatalf("heart.N = %d, want 48", fam.N)
 	}
 }
