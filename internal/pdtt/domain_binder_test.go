@@ -67,16 +67,16 @@ roots[val.indices as i]:
   dot mark:
     at: [val[i], 0]
 
-  arrow hit:
-    from: [val[i], -1]
-    to: mark.at
+  path hit:
+    points: [[val[i], -1], mark.at]
+    stroke.end: arrow
 
 | 1s | linear
 | val[* as i] -> [2, 3][i]
 `)
 
-	if len(rt.liveFields) != 6 {
-		t.Fatalf("live fields = %d, want 6", len(rt.liveFields))
+	if len(rt.liveFields) != 4 {
+		t.Fatalf("live fields = %d, want 4", len(rt.liveFields))
 	}
 	if err := rt.Step(0.5); err != nil {
 		t.Fatalf("Step(0.5): %v", err)
@@ -91,17 +91,25 @@ roots[val.indices as i]:
 	if got := m1.fvec("at")[0]; got != 2 {
 		t.Fatalf("mark 1 x at half tween = %v, want 2", got)
 	}
-	if got := h0.fvec("from")[0]; got != 1 {
-		t.Fatalf("hit 0 from.x at half tween = %v, want 1", got)
+	h0Points, err := asPoints(h0.Fields["points"].Val)
+	if err != nil {
+		t.Fatalf("hit 0 points: %v", err)
 	}
-	if got := h1.fvec("from")[0]; got != 2 {
-		t.Fatalf("hit 1 from.x at half tween = %v, want 2", got)
+	h1Points, err := asPoints(h1.Fields["points"].Val)
+	if err != nil {
+		t.Fatalf("hit 1 points: %v", err)
 	}
-	if got := h0.fvec("to")[0]; got != 1 {
-		t.Fatalf("hit 0 to.x at half tween = %v, want 1", got)
+	if got := h0Points[0][0]; got != 1 {
+		t.Fatalf("hit 0 points[0].x at half tween = %v, want 1", got)
 	}
-	if got := h1.fvec("to")[0]; got != 2 {
-		t.Fatalf("hit 1 to.x at half tween = %v, want 2", got)
+	if got := h1Points[0][0]; got != 2 {
+		t.Fatalf("hit 1 points[0].x at half tween = %v, want 2", got)
+	}
+	if got := h0Points[1][0]; got != 1 {
+		t.Fatalf("hit 0 points[1].x at half tween = %v, want 1", got)
+	}
+	if got := h1Points[1][0]; got != 2 {
+		t.Fatalf("hit 1 points[1].x at half tween = %v, want 2", got)
 	}
 	if err := rt.Step(1.25); err != nil {
 		t.Fatalf("Step(1.25): %v", err)
@@ -126,9 +134,9 @@ roots[0..2 as i]:
   dot p:
     at: [x, 0]
 
-  arrow ray:
-    from: [0, 0]
-    to: [x, 0]
+  path ray:
+    points: [[0, 0], [x, 0]]
+    stroke.end: arrow
 
 | 1s | linear
 | scale -> 3
@@ -144,8 +152,12 @@ roots[0..2 as i]:
 		if got := p.fvec("at")[0]; got != want {
 			t.Fatalf("roots[%d].p.at.x = %v, want %v", key, got, want)
 		}
-		if got := ray.fvec("to")[0]; got != want {
-			t.Fatalf("roots[%d].ray.to.x = %v, want %v", key, got, want)
+		points, err := asPoints(ray.Fields["points"].Val)
+		if err != nil {
+			t.Fatalf("roots[%d].ray.points: %v", key, err)
+		}
+		if got := points[1][0]; got != want {
+			t.Fatalf("roots[%d].ray.points[1].x = %v, want %v", key, got, want)
 		}
 	}
 }
@@ -163,9 +175,9 @@ ring[0..n as i]:
   dot p:
     at: [cos(a), sin(a)]
 
-  arrow chord:
-    from: ring[prev_i].p.at
-    to: p.at
+  path chord:
+    points: [ring[prev_i].p.at, p.at]
+    stroke.end: arrow
 
 | 1s | linear
 | phase -> math.tau
@@ -179,8 +191,12 @@ ring[0..n as i]:
 	p2 := oneEntity(t, rt, familyMemberName("ring", 2, "p"))
 	chord0 := oneEntity(t, rt, familyMemberName("ring", 0, "chord"))
 
-	assertVecNear(t, "ring[0].chord.from", chord0.fvec("from"), p2.fvec("at"))
-	assertVecNear(t, "ring[0].chord.to", chord0.fvec("to"), p0.fvec("at"))
+	points, err := asPoints(chord0.Fields["points"].Val)
+	if err != nil {
+		t.Fatalf("ring[0].chord.points: %v", err)
+	}
+	assertVecNear(t, "ring[0].chord.points[0]", points[0], p2.fvec("at"))
+	assertVecNear(t, "ring[0].chord.points[1]", points[1], p0.fvec("at"))
 }
 
 func TestSnapshotColonBindingFreezesRecord(t *testing.T) {

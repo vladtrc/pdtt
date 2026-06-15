@@ -2,7 +2,7 @@ scene graph_showcase
 
 # Same scene as indexed-group, written with the single binder rule `domain as name`.
 # `roots[val.indices as i]:` declares one plural family whose instances each carry a dot,
-# hit arrow, factor and label. `i` is bound over `val.indices` (the index domain of `val`),
+# hit path, factor and label. `i` is bound over `val.indices` (the index domain of `val`),
 # scoped to the bracket; the parallel lists are read by it. The score binds the same way:
 # plain `roots[*]` when the index is unused, `roots[* as i]` when it is read by name.
 # Whole-vector derivations (the curve, the expanded polynomial) read the lists directly and
@@ -39,10 +39,10 @@ roots[val.indices as i]:            # one binder rule — bind i over a domain
     radius: 0.095
     color: color[i]
 
-  arrow hit:
-    from: ax.point(val[i], -1.45)
-    to: mark.at                     # sibling member of the same instance — no index
-    color: color[i]
+  path hit:
+    points: [ax.point(val[i], -1.45), mark.at] # sibling member of the same instance — no index
+    stroke.color: color[i]
+    stroke.end: arrow
 
   typst(fmt("(x {:+.2f})", 0 - val[i])) factor:
     at: factor_at[i]

@@ -5,8 +5,10 @@ tex nabla:
   scale: 3
   at: left(2.5)
 
-square sq:
-  side: 2
+path sq:
+  points: [[-1, -1], [1, -1], [1, 1], [-1, 1]]
+  closed: 1
+  stroke.color: color.white
   at: right_of(nabla, 3)
 
 home = frame

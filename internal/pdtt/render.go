@@ -81,8 +81,6 @@ func (r *Renderer) Frame(rt *Runtime) *gg.Context {
 			continue
 		}
 		switch e.Type {
-		case "rect", "square":
-			r.drawRect(dc, c, e, tf)
 		case "dot":
 			r.drawDot(dc, c, e, tf)
 		case "tex", "typst", "text", "decimal":
@@ -93,10 +91,8 @@ func (r *Renderer) Frame(rt *Runtime) *gg.Context {
 			r.drawAxes(dc, c, e, tf)
 		case "plot":
 			r.drawPlot(dc, c, e, tf)
-		case "arrow":
-			r.drawArrow(dc, c, e, tf)
-		case "arc":
-			r.drawArc(dc, c, e, tf)
+		case "path":
+			r.drawPath(dc, c, e, tf)
 		}
 	}
 	return dc
@@ -115,6 +111,47 @@ func fieldColor(e *Entity, name string, fallback Color) Color {
 	return fallback
 }
 
+func fieldString(e *Entity, names ...string) string {
+	for _, name := range names {
+		if s := e.fstr(name); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func pathStrokeColor(e *Entity) Color {
+	if c := fieldColor(e, "stroke.color", Color{}); c.A > 0 {
+		return c
+	}
+	return fieldColor(e, "stroke", entityColor(e))
+}
+
+func pathFillColor(e *Entity) (Color, bool) {
+	if f, ok := e.Fields["fill.color"]; ok && f.Val != nil {
+		if c, err := asColor(f.Val); err == nil {
+			return c, true
+		}
+	}
+	if f, ok := e.Fields["fill"]; ok && f.Val != nil {
+		if c, err := asColor(f.Val); err == nil {
+			return c, true
+		}
+	}
+	return Color{}, false
+}
+
+func pathStrokeWidth(e *Entity) float64 {
+	w := e.fnum("stroke.width")
+	if w <= 0 {
+		w = e.fnum("width")
+	}
+	if w <= 0 {
+		w = 0.035
+	}
+	return w
+}
+
 func outlinePoints(e *Entity, n int) []Vec {
 	if n <= 0 {
 		return nil
@@ -125,9 +162,15 @@ func outlinePoints(e *Entity, n int) []Vec {
 		}
 	}
 	tf := e.transform()
-	at, angle := tf.At, tf.Angle
+	at := tf.At
 	pts := make([]Vec, n)
 	switch e.Type {
+	case "path":
+		pathPts := pathPoints(e, tf)
+		if e.fnum("closed") == 0 || len(pathPts) < 2 {
+			return nil
+		}
+		return resampleClosed(pathPts, n)
 	case "dot":
 		r := e.fnum("radius")
 		if r == 0 {
@@ -137,18 +180,6 @@ func outlinePoints(e *Entity, n int) []Vec {
 		for i := range pts {
 			theta := 2 * math.Pi * float64(i) / float64(n)
 			pts[i] = Vec{at[0] + r*math.Cos(theta), at[1] + r*math.Sin(theta), at[2]}
-		}
-	case "rect", "square":
-		w, h := entitySize(e)
-		hw, hh := w/2, h/2
-		for i := range pts {
-			theta := 2 * math.Pi * float64(i) / float64(n)
-			cos, sin := math.Cos(theta), math.Sin(theta)
-			dx := hw / math.Max(math.Abs(cos), 1e-9)
-			dy := hh / math.Max(math.Abs(sin), 1e-9)
-			d := math.Min(dx, dy)
-			p := Vec{at[0] + d*cos, at[1] + d*sin, at[2]}
-			pts[i] = rotateAround(p, at, angle)
 		}
 	default:
 		w, h := entitySize(e)
@@ -426,70 +457,6 @@ func (r *Renderer) drawMorphPath(dc *gg.Context, c cam, e *Entity, tf Transform)
 		trace()
 		dc.Stroke()
 	}
-}
-
-func drawRectStrokeProgress(dc *gg.Context, w, h, progress float64) {
-	progress = clamp01(progress)
-	if progress <= 0 {
-		return
-	}
-	x0, y0 := -w/2, -h/2
-	x1, y1 := w/2, h/2
-	perim := 2 * (w + h)
-	remain := progress * perim
-	dc.MoveTo(x0, y0)
-	edges := [][4]float64{
-		{x0, y0, x1, y0},
-		{x1, y0, x1, y1},
-		{x1, y1, x0, y1},
-		{x0, y1, x0, y0},
-	}
-	for _, ed := range edges {
-		ex0, ey0, ex1, ey1 := ed[0], ed[1], ed[2], ed[3]
-		elen := math.Hypot(ex1-ex0, ey1-ey0)
-		if remain >= elen {
-			dc.LineTo(ex1, ey1)
-			remain -= elen
-			continue
-		}
-		if remain > 0 {
-			t := remain / elen
-			dc.LineTo(lerp(ex0, ex1, t), lerp(ey0, ey1, t))
-		}
-		break
-	}
-}
-
-func (r *Renderer) drawRect(dc *gg.Context, c cam, e *Entity, tf Transform) {
-	op := tf.Opacity
-	at := tf.At
-	w, h := entitySize(e)
-	angle := tf.Angle
-	draw := clamp01(e.fnum("draw"))
-	if draw <= 0 {
-		return
-	}
-	x, y := c.sx(at)
-	wp, hp := w*c.ppu, h*c.ppu
-	dc.Push()
-	dc.Translate(x, y)
-	// world-space positive rotation is CCW; screen y-axis is flipped.
-	dc.Rotate(-angle)
-	if f, ok := e.Fields["fill"]; ok && f.Val != nil {
-		if col, err := asColor(f.Val); err == nil {
-			setColor(dc, Color{col.R, col.G, col.B, 1}, op*col.A)
-			dc.DrawRectangle(-wp/2, -hp/2, wp, hp)
-			dc.Fill()
-		}
-	}
-	stroke := fieldColor(e, "stroke", namedColors["white"])
-	if _, hasStroke := e.Fields["stroke"]; hasStroke || e.Type == "square" {
-		setColor(dc, stroke, op)
-		dc.SetLineWidth(math.Max(1.5, 0.045*c.ppu))
-		drawRectStrokeProgress(dc, wp, hp, draw)
-		dc.Stroke()
-	}
-	dc.Pop()
 }
 
 func (r *Renderer) drawDot(dc *gg.Context, c cam, e *Entity, tf Transform) {
@@ -806,61 +773,123 @@ func (r *Renderer) drawPlot(dc *gg.Context, c cam, e *Entity, tf Transform) {
 	}
 }
 
-func (r *Renderer) drawArrow(dc *gg.Context, c cam, e *Entity, tf Transform) {
-	op := tf.Opacity
-	draw := e.fnum("draw")
-	if draw <= 0.001 {
-		return
+func pathPoints(e *Entity, tf Transform) []Vec {
+	f, ok := e.Fields["points"]
+	if !ok || f.Val == nil {
+		return nil
 	}
-	from := e.fvec("from").Add(e.Offset)
-	to := e.fvec("to").Add(e.Offset)
-	tip := from.Add(to.Sub(from).Mul(draw))
-	col := entityColor(e)
-	setColor(dc, col, op)
-	dc.SetLineWidth(math.Max(1.5, 0.035*c.ppu))
-	r.polyline(dc, c, []Vec{from, tip})
-	r.arrowHead(dc, c, tip, tip.Sub(from), op, col)
+	pts, err := asPoints(f.Val)
+	if err != nil || len(pts) == 0 {
+		return nil
+	}
+	out := make([]Vec, len(pts))
+	for i, p := range pts {
+		p = p.Mul(tf.Scale).Add(tf.At)
+		out[i] = rotateAround(p, tf.At, tf.Angle)
+	}
+	return out
 }
 
-func (r *Renderer) drawArc(dc *gg.Context, c cam, e *Entity, tf Transform) {
+func trimPathPoints(pts []Vec, draw float64) []Vec {
+	draw = clamp01(draw)
+	if draw >= 1 || len(pts) < 2 {
+		return pts
+	}
+	if draw <= 0 {
+		return nil
+	}
+	total := 0.0
+	lengths := make([]float64, len(pts)-1)
+	for i := 0; i < len(pts)-1; i++ {
+		l := math.Hypot(pts[i+1][0]-pts[i][0], pts[i+1][1]-pts[i][1])
+		lengths[i] = l
+		total += l
+	}
+	if total <= 1e-9 {
+		return pts[:1]
+	}
+	remain := total * draw
+	out := []Vec{pts[0]}
+	for i, l := range lengths {
+		if remain >= l {
+			out = append(out, pts[i+1])
+			remain -= l
+			continue
+		}
+		if remain > 0 {
+			u := remain / l
+			out = append(out, Vec{
+				lerp(pts[i][0], pts[i+1][0], u),
+				lerp(pts[i][1], pts[i+1][1], u),
+				lerp(pts[i][2], pts[i+1][2], u),
+			})
+		}
+		break
+	}
+	return out
+}
+
+func closePathPoints(pts []Vec) []Vec {
+	if len(pts) == 0 {
+		return nil
+	}
+	out := make([]Vec, 0, len(pts)+1)
+	out = append(out, pts...)
+	out = append(out, pts[0])
+	return out
+}
+
+func (r *Renderer) tracePath(dc *gg.Context, c cam, pts []Vec, closed bool) {
+	for i, p := range pts {
+		x, y := c.sx(p)
+		if i == 0 {
+			dc.MoveTo(x, y)
+		} else {
+			dc.LineTo(x, y)
+		}
+	}
+	if closed {
+		dc.ClosePath()
+	}
+}
+
+func (r *Renderer) drawPath(dc *gg.Context, c cam, e *Entity, tf Transform) {
 	op := tf.Opacity
 	draw := clamp01(e.fnum("draw"))
-	if draw <= 0.001 {
+	closed := e.fnum("closed") != 0
+	pts := pathPoints(e, tf)
+	if len(pts) < 2 || draw <= 0 {
 		return
 	}
-	rad := e.fnum("radius")
-	if rad <= 0 {
-		rad = 0.5
+	drawPts := pts
+	if closed {
+		if draw < 1 {
+			drawPts = trimPathPoints(closePathPoints(pts), draw)
+		}
+	} else {
+		drawPts = trimPathPoints(pts, draw)
 	}
-	center := tf.At
-	start := e.fnum("start_angle") + tf.Angle
-	end := e.fnum("end_angle") + tf.Angle
-	sweep := (end - start) * draw
-	steps := int(math.Ceil(math.Abs(sweep) / (math.Pi / 48)))
-	if steps < 2 {
-		steps = 2
+	if len(drawPts) < 2 {
+		return
 	}
-	if steps > 192 {
-		steps = 192
+	if closed && draw >= 1 {
+		if fill, ok := pathFillColor(e); ok && fill.A > 0.001 {
+			setColor(dc, Color{fill.R, fill.G, fill.B, 1}, op*fill.A)
+			r.tracePath(dc, c, drawPts, true)
+			dc.Fill()
+		}
 	}
-	rad *= tf.Scale
-	pts := make([]Vec, 0, steps+1)
-	for i := 0; i <= steps; i++ {
-		u := float64(i) / float64(steps)
-		a := start + sweep*u
-		pts = append(pts, Vec{
-			center[0] + rad*math.Cos(a),
-			center[1] + rad*math.Sin(a),
-			center[2],
-		})
+	stroke := pathStrokeColor(e)
+	if stroke.A > 0.001 {
+		setColor(dc, stroke, op)
+		dc.SetLineWidth(math.Max(1.0, pathStrokeWidth(e)*c.ppu))
+		r.tracePath(dc, c, drawPts, closed && draw >= 1)
+		dc.Stroke()
 	}
-	col := fieldColor(e, "stroke", entityColor(e))
-	setColor(dc, col, op)
-	dc.SetLineWidth(math.Max(1.5, 0.035*c.ppu))
-	r.polyline(dc, c, pts)
-	if e.fnum("arrow") > 0.5 && len(pts) >= 2 {
-		tip := pts[len(pts)-1]
-		prev := pts[len(pts)-2]
-		r.arrowHead(dc, c, tip, tip.Sub(prev), op, col)
+	end := fieldString(e, "stroke.end", "end", "end_marker")
+	if end == "arrow" && len(drawPts) >= 2 {
+		tip := drawPts[len(drawPts)-1]
+		prev := drawPts[len(drawPts)-2]
+		r.arrowHead(dc, c, tip, tip.Sub(prev), op, stroke)
 	}
 }

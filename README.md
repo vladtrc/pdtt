@@ -66,6 +66,8 @@ Flags:
 - App wiring uses the `d2` DI container (`config -> parser -> compiler -> renderer -> encoder`).
 - Constants are lowercase and namespaced (`color.*`, `corner.*`, `approx.*`).
 - Math constants are provided under `math.*` (`math.pi`, `math.tau`).
+- Linear/filled geometry uses `path`; `arrow`, `line`, `rect`, `square`, `arc`, `circle`, `ellipse`, and `polygon` are not record types.
+- Arrowheads are path styling: `stroke.end: arrow`.
 - Tween (`->`) keeps tracking dynamic RHS expressions after the tween window ends.
 - `examples/20-dynamic-point-tween` demonstrates a tween between two moving points.
 - Records start inactive. Use `obj{field: start} -> obj` for same-object entry and `morph` to activate a target.

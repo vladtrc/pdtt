@@ -81,30 +81,30 @@ plot circle_lower:
   fn: 0 - sqrt(1 - x * x)
   color: color.blue @ 72%
 
-arrow hyper_vec:
-  from: ax.point(0, 0)
-  to: hyper_point.at
-  color: color.green
+path hyper_vec:
+  points: [ax.point(0, 0), hyper_point.at]
+  stroke.color: color.green
+  stroke.end: arrow
 
 dot hyper_point:
   at: ax.point(cosh(u), sinh(u))
   radius: 0.105
   color: color.green
 
-arrow height_link:
-  from: hyper_point.at
-  to: tangent_point.at
-  color: color.orange @ 88%
+path height_link:
+  points: [hyper_point.at, tangent_point.at]
+  stroke.color: color.orange @ 88%
+  stroke.end: arrow
 
 dot tangent_point:
   at: ax.point(1, sinh(u))
   radius: 0.09
   color: color.orange
 
-arrow tangent_ray:
-  from: ax.point(0, 0)
-  to: tangent_point.at
-  color: color.yellow @ 86%
+path tangent_ray:
+  points: [ax.point(0, 0), tangent_point.at]
+  stroke.color: color.yellow @ 86%
+  stroke.end: arrow
 
 text("та же высота sinh(u)") height_label:
   at: ax.point(2.05, sinh(u) + 0.28)

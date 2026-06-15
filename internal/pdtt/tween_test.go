@@ -41,6 +41,41 @@ dot target:
 	assertVecNear(t, "tracked target position", target.fvec("at"), Vec{0, 2, 0})
 }
 
+func TestPathPointsTrackDynamicEndpointFields(t *testing.T) {
+	rt := compileScene(t, `scene path_dynamic_points
+
+theta = 0
+
+dot a:
+  at: [cos(theta), sin(theta)]
+
+dot b:
+  at: [2 * cos(theta), 2 * sin(theta)]
+
+path chord:
+  points: [a.at, b.at]
+  stroke.color: color.gold
+  stroke.width: 0.04
+
+| 2s | linear
+| theta -> math.pi / 2
+`)
+	chord := oneEntity(t, rt, "chord")
+	if err := rt.Step(1); err != nil {
+		t.Fatalf("Step(1): %v", err)
+	}
+	points, err := asPoints(chord.Fields["points"].Val)
+	if err != nil {
+		t.Fatalf("points: %v", err)
+	}
+	if len(points) != 2 {
+		t.Fatalf("points len = %d, want 2", len(points))
+	}
+	s := math.Sqrt(0.5)
+	assertVecNear(t, "path point 0", points[0], Vec{s, s, 0})
+	assertVecNear(t, "path point 1", points[1], Vec{2 * s, 2 * s, 0})
+}
+
 func assertVecNear(t *testing.T, label string, got, want Vec) {
 	t.Helper()
 	for i := range got {

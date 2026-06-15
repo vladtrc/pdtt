@@ -108,6 +108,11 @@ type Entity struct {
 	layoutKey   string
 }
 
+type fieldNamespace struct {
+	E      *Entity
+	Prefix string
+}
+
 // Transform is an entity's spatial state for one frame: world position
 // (the `at` field plus the verb-owned animation Offset), uniform Scale,
 // Angle, and Opacity. Renderers and attr lookups read these through
@@ -149,7 +154,9 @@ func defaultFieldVal(typ, name string) Value {
 		return 1.0
 	case "at", "from", "to":
 		return Vec{}
-	case "value", "angle", "side", "w", "h", "radius":
+	case "value", "angle", "side", "w", "h", "radius", "stroke.width":
+		return 0.0
+	case "closed":
 		return 0.0
 	}
 	return nil
@@ -285,6 +292,34 @@ func asColor(v Value) (Color, error) {
 	return Color{}, fmt.Errorf("not a color: %T", v)
 }
 
+func asPoints(v Value) ([]Vec, error) {
+	switch x := v.(type) {
+	case []Vec:
+		return x, nil
+	case []Value:
+		out := make([]Vec, 0, len(x))
+		for _, it := range x {
+			p, err := asVec(it)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, p)
+		}
+		return out, nil
+	case ItVal:
+		return asPoints(x.Val)
+	}
+	return nil, fmt.Errorf("not a point list: %T", v)
+}
+
+func pointsAsValues(points []Vec) []Value {
+	out := make([]Value, len(points))
+	for i, p := range points {
+		out[i] = p
+	}
+	return out
+}
+
 func lerp(a, b, u float64) float64 { return a + (b-a)*u }
 
 func lerpValue(a, b Value, u float64) Value {
@@ -310,6 +345,19 @@ func lerpValue(a, b Value, u float64) Value {
 			return b
 		}
 		return Color{lerp(av.R, bv.R, u), lerp(av.G, bv.G, u), lerp(av.B, bv.B, u), lerp(av.A, bv.A, u)}
+	case []Value:
+		bv, ok := b.([]Value)
+		if !ok || len(av) != len(bv) {
+			if u >= 1 {
+				return b
+			}
+			return a
+		}
+		out := make([]Value, len(av))
+		for i := range av {
+			out[i] = lerpValue(av[i], bv[i], u)
+		}
+		return out
 	}
 	if u >= 1 {
 		return b
@@ -361,6 +409,11 @@ var namedVecs = map[string]Vec{
 
 var namedNums = map[string]float64{
 	"pi": math.Pi, "tau": 2 * math.Pi, "e": math.E,
+}
+
+var namedStrings = map[string]string{
+	"arrow": "arrow",
+	"none":  "none",
 }
 
 type namespace map[string]Value
@@ -457,6 +510,9 @@ func (s *Scope) lookup(name string) (Value, error) {
 	}
 	if n, ok := namedNums[name]; ok {
 		return n, nil
+	}
+	if s, ok := namedStrings[name]; ok {
+		return s, nil
 	}
 	if ns, ok := namespaces[name]; ok {
 		return ns, nil
@@ -804,6 +860,8 @@ func (s *Scope) attr(x Value, name string) (Value, error) {
 		return s.attr(v.Val, name)
 	case *PartState:
 		return s.partAttr(v, name)
+	case fieldNamespace:
+		return s.fieldNamespaceAttr(v, name)
 	case Snapshot:
 		if f, ok := v.Fields[name]; ok {
 			return f, nil
@@ -881,6 +939,12 @@ func (s *Scope) entityAttr(e *Entity, name string) (Value, error) {
 	if f, ok := e.Fields[name]; ok && f.Val != nil {
 		return f.Val, nil
 	}
+	prefix := name + "."
+	for _, fieldName := range e.Order {
+		if strings.HasPrefix(fieldName, prefix) {
+			return fieldNamespace{E: e, Prefix: name}, nil
+		}
+	}
 	switch name {
 	case "w":
 		return w, nil
@@ -891,6 +955,17 @@ func (s *Scope) entityAttr(e *Entity, name string) (Value, error) {
 		return d, nil
 	}
 	return nil, fmt.Errorf("record %s has no field %q", e.Name, name)
+}
+
+func (s *Scope) fieldNamespaceAttr(ns fieldNamespace, name string) (Value, error) {
+	fieldName := ns.Prefix + "." + name
+	if f, ok := ns.E.Fields[fieldName]; ok && f.Val != nil {
+		return f.Val, nil
+	}
+	if d := defaultFieldVal(ns.E.Type, fieldName); d != nil {
+		return d, nil
+	}
+	return nil, fmt.Errorf("record %s has no field %q", ns.E.Name, fieldName)
 }
 
 func (s *Scope) partAttr(p *PartState, name string) (Value, error) {
@@ -1276,22 +1351,27 @@ func evalWith(rt *Runtime, e Expr, binds map[string]Value) (Value, error) {
 func entitySize(e *Entity) (w, h float64) {
 	scale := e.transform().Scale
 	switch e.Type {
-	case "rect":
-		return e.fnum("w") * scale, e.fnum("h") * scale
-	case "square":
-		return e.fnum("side") * scale, e.fnum("side") * scale
 	case "dot":
 		r := e.fnum("radius")
 		if r == 0 {
 			r = 0.08
 		}
 		return 2 * r * scale, 2 * r * scale
-	case "arc":
-		r := e.fnum("radius")
-		if r <= 0 {
-			r = 0.5
+	case "path":
+		if f, ok := e.Fields["points"]; ok && f.Val != nil {
+			pts, err := asPoints(f.Val)
+			if err == nil && len(pts) > 0 {
+				minX, maxX := pts[0][0], pts[0][0]
+				minY, maxY := pts[0][1], pts[0][1]
+				for _, p := range pts[1:] {
+					minX = math.Min(minX, p[0])
+					maxX = math.Max(maxX, p[0])
+					minY = math.Min(minY, p[1])
+					maxY = math.Max(maxY, p[1])
+				}
+				return (maxX - minX) * scale, (maxY - minY) * scale
+			}
 		}
-		return 2 * r * scale, 2 * r * scale
 	case "tex", "typst", "text", "decimal":
 		lay := textLayoutOf(e)
 		if lay != nil {
@@ -1304,7 +1384,7 @@ func entitySize(e *Entity) (w, h float64) {
 }
 
 func entityColor(e *Entity) Color {
-	for _, name := range []string{"color", "fill"} {
+	for _, name := range []string{"color", "stroke.color", "stroke", "fill.color", "fill"} {
 		if f, ok := e.Fields[name]; ok && f.Val != nil {
 			if c, err := asColor(f.Val); err == nil {
 				return c

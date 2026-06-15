@@ -126,8 +126,9 @@ replace a live field definition at that point in the score.
 
 ## Renderable Types
 
-Common fields on visual records: `at`, `scale`, `angle`, `opacity`, `color`, `fill`,
-`stroke`, `draw`.
+Common fields on visual records: `at`, `scale`, `angle`, `opacity`, `draw`.
+Use dotted material fields for paths: `stroke.color`, `stroke.width`, `stroke.end`,
+`fill.color`.
 
 Supported rendered record types:
 
@@ -137,31 +138,23 @@ dot d:
   radius: 0.1
   color: color.blue
 
-square s:
-  at: [0, 0]
-  side: 1.2
-  stroke: color.white
-  fill: color.blue @ 25%
+path edge:
+  points: [[-2, 0], [2, 0]]
+  stroke.color: color.yellow
+  stroke.width: 0.04
+  stroke.end: arrow
 
-rect r:
+path area:
   at: [0, 0]
-  w: 2
-  h: 1
-  stroke: color.white
-  fill: color.teal @ 30%
-
-arrow a:
-  from: [-2, 0]
-  to: [2, 0]
-  color: color.yellow
-
-arc angle_mark:
-  at: [0, 0]
-  radius: 0.6
-  start_angle: 0
-  end_angle: math.pi / 2
-  color: color.green
+  points: [[-1, -1], [1, -1], [1, 1], [-1, 1]]
+  closed: 1
+  stroke.color: color.white
+  fill.color: color.blue @ 25%
 ```
+
+`arrow`, `line`, `rect`, `square`, `arc`, `circle`, `ellipse`, and `polygon` are not
+record types. Spell them as `path` records with explicit `points`; an arrowhead is
+`stroke.end: arrow`, not geometry.
 
 Graphs:
 
@@ -355,10 +348,10 @@ roots[val.indices as i]:
     radius: 0.095
     color: cols[i]
 
-  arrow hit:
-    from: ax.point(x, -1.2)
-    to: mark.at
-    color: cols[i]
+  path hit:
+    points: [ax.point(x, -1.2), mark.at]
+    stroke.color: cols[i]
+    stroke.end: arrow
 
   text n:
     text: label_text
@@ -400,9 +393,9 @@ ring[0..n as i]:
   dot p:
     at: [2 * cos(a), 2 * sin(a)]
 
-  arrow chord:
-    from: ring[prev_i].p.at
-    to: p.at
+  path chord:
+    points: [ring[prev_i].p.at, p.at]
+    stroke.end: arrow
 ```
 
 The dependency graph follows these indexed references, so if `phase` tweens, both `p`

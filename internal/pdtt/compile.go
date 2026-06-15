@@ -68,6 +68,10 @@ func coerceField(name string, v Value) Value {
 		if vec, err := asVec(v); err == nil {
 			return vec
 		}
+	case "points":
+		if pts, err := asPoints(v); err == nil {
+			return pointsAsValues(pts)
+		}
 	}
 	return v
 }
@@ -419,6 +423,9 @@ func Compile(stmts []Stmt) (*Runtime, error) {
 // ---------- records ----------
 
 func (rt *Runtime) addRecord(v RecordStmt, scope *Scope) error {
+	if err := checkRecordType(v); err != nil {
+		return err
+	}
 	var fields []FieldDef
 	var forE Expr
 	for _, fd := range v.Fields {
@@ -484,6 +491,16 @@ func (rt *Runtime) addRecord(v RecordStmt, scope *Scope) error {
 	// then freeze — they are tables, not signals (proposal §1).
 	if v.Type == "data" {
 		return rt.evalDataColumns(grp, fields, v.Line)
+	}
+	return nil
+}
+
+func checkRecordType(v RecordStmt) error {
+	switch v.Type {
+	case "arrow", "line":
+		return fmt.Errorf("line %d: %q is not a record type; use `path` with `points` and `stroke.end: arrow` when needed", v.Line, v.Type)
+	case "rect", "square", "arc", "circle", "ellipse", "polygon":
+		return fmt.Errorf("line %d: %q is not a record type; use `path` with explicit points, `closed`, `fill.*`, and `stroke.*`", v.Line, v.Type)
 	}
 	return nil
 }
@@ -1750,12 +1767,14 @@ func firstNonNil(a, b Value) Value {
 	return b
 }
 
-// refForTrail resolves entity field path like ["scale"] or ["at"].
+// refForTrail resolves entity field paths like ["scale"], ["at"], or
+// material fields spelled as dotted attributes (`shape.stroke.color`).
 func refForTrail(e *Entity, trail []string) (Ref, error) {
-	if len(trail) != 1 {
+	if len(trail) == 0 {
 		return nil, fmt.Errorf("unsupported field path depth %v", trail)
 	}
-	return FieldRef{E: e, F: e.field(trail[0])}, nil
+	name := strings.Join(trail, ".")
+	return FieldRef{E: e, F: e.field(name)}, nil
 }
 
 // resolveRef resolves a non-broadcast arrow LHS. Returns special = "record"
@@ -1772,6 +1791,13 @@ func (rt *Runtime) resolveRef(lhs Expr, binds map[string]Value) (Ref, string, er
 		}
 		return nil, "", fmt.Errorf("unknown arrow target %q", name)
 	case AttrE:
+		if ent, trail, ok := rt.entityTrailRef(v, binds); ok {
+			if len(trail) == 1 && trail[0] == "warp" {
+				return WarpBlendRef{E: ent}, "warp", nil
+			}
+			ref, err := refForTrail(ent, trail)
+			return ref, "", err
+		}
 		s := &Scope{rt: rt, binds: binds}
 		base, err := s.Eval(v.X)
 		if err != nil {
@@ -1824,6 +1850,32 @@ func (rt *Runtime) resolveRef(lhs Expr, binds map[string]Value) (Ref, string, er
 		return nil, "", fmt.Errorf("bad arrow target")
 	}
 	return nil, "", fmt.Errorf("bad arrow target %T", lhs)
+}
+
+func (rt *Runtime) entityTrailRef(lhs Expr, binds map[string]Value) (*Entity, []string, bool) {
+	var trail []string
+	cur := lhs
+	for {
+		attr, ok := cur.(AttrE)
+		if !ok {
+			break
+		}
+		trail = append([]string{attr.Name}, trail...)
+		cur = attr.X
+	}
+	if len(trail) == 0 {
+		return nil, nil, false
+	}
+	s := &Scope{rt: rt, binds: binds}
+	base, err := s.Eval(cur)
+	if err != nil {
+		return nil, nil, false
+	}
+	e, ok := base.(*Entity)
+	if !ok {
+		return nil, nil, false
+	}
+	return e, trail, true
 }
 
 // fillTween: standard tween; elemIdx >= 0 enables list-RHS positional pairing.
@@ -2135,14 +2187,14 @@ func isTextType(typ string) bool {
 
 func canOutline(typ string) bool {
 	switch typ {
-	case "rect", "square", "dot", "tex", "typst", "text", "decimal":
+	case "path", "dot", "tex", "typst", "text", "decimal":
 		return true
 	}
 	return false
 }
 
 // shapeStrokeWorldW is the stroke width (world units) the static renderer uses
-// for shape outlines (rect/square/dot): see the 0.045*ppu line widths in
+// for shape outlines (path/dot): see the 0.045*ppu line widths in
 // render.go. Text has no stroke, so its morph stroke width is 0 — mirroring
 // manim, where Text/MathTex have stroke_width=0 and Circle has stroke_width≈4.
 const shapeStrokeWorldW = 0.045
@@ -2170,29 +2222,9 @@ func shapeStyleForMorph(e *Entity) shapeMorphStyle {
 	var strokeCol Color
 	var strokeA float64
 	switch e.Type {
-	case "square":
-		strokeCol = namedColors["white"]
-		strokeA = 1
-		if f, ok := e.Fields["stroke"]; ok && f.Val != nil {
-			if c, err := asColor(f.Val); err == nil {
-				strokeCol = c
-				strokeA = c.A
-			}
-		}
-	case "rect":
-		if f, ok := e.Fields["stroke"]; ok && f.Val != nil {
-			if c, err := asColor(f.Val); err == nil {
-				strokeCol = c
-				strokeA = c.A
-			}
-		}
-	case "dot":
-		if f, ok := e.Fields["stroke"]; ok && f.Val != nil {
-			if c, err := asColor(f.Val); err == nil {
-				strokeCol = c
-				strokeA = c.A
-			}
-		}
+	case "path", "dot":
+		strokeCol = fieldColor(e, "stroke.color", fieldColor(e, "stroke", namedColors["white"]))
+		strokeA = strokeCol.A
 	}
 
 	var fillCol Color
@@ -2200,13 +2232,16 @@ func shapeStyleForMorph(e *Entity) shapeMorphStyle {
 	switch e.Type {
 	case "dot":
 		fillCol = entityColor(e)
-		fillA = fillCol.A
-	case "rect", "square":
 		if f, ok := e.Fields["fill"]; ok && f.Val != nil {
 			if c, err := asColor(f.Val); err == nil {
 				fillCol = c
-				fillA = c.A
 			}
+		}
+		fillA = fillCol.A
+	case "path":
+		if c, ok := pathFillColor(e); ok {
+			fillCol = c
+			fillA = c.A
 		}
 	}
 

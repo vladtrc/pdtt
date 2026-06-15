@@ -58,15 +58,15 @@ a *true* outline morph possible (text→text and text→shape) instead of the cr
 - In `expandMorph`: **delete the `textMorph` cross-fade hack**. Make the morph use the
   outline-point path whenever **both** sides can produce outlines. So:
   - text → text  : outline morph (glyph A outline → glyph B outline)
-  - text → shape : outline morph (glyph outline → circle/square/dot outline)
+  - text → shape : outline morph (glyph outline → closed path/dot outline)
   - shape → shape: unchanged (already outline morph)
-  Generalize `isShapeType`→`canOutline(typ)` covering `rect square dot tex text decimal`.
+  Generalize `isShapeType`→`canOutline(typ)` covering `path dot tex text decimal`.
   Keep the opacity hand-off (`src.opacity→0`, `dst.opacity→1` at `u>=1`) and the stroke/fill
   blend already there. Bump the sample count `n` if 64 looks too coarse for glyphs.
 
 ### 5. Example `examples/45-text-morph/`
 - `run.pdtt` (NEW lowercase syntax): a `tex` "A" morphs to a `tex` "B", then to a shape
-  (e.g. `dot` circle or `square`). Sketch:
+  (`dot` or a closed `path`). Sketch:
   ```
   scene text_morph
 

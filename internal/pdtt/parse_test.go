@@ -169,6 +169,24 @@ dot d:
 	}
 }
 
+func TestDerivedShapeTypesAreRejected(t *testing.T) {
+	for _, typ := range []string{"arrow", "line", "rect", "square", "arc", "circle", "ellipse", "polygon"} {
+		t.Run(typ, func(t *testing.T) {
+			stmts, err := ParseFile("scene no_sugar\n\n" + typ + " x:\n")
+			if err != nil {
+				t.Fatalf("ParseFile: %v", err)
+			}
+			_, err = Compile(stmts)
+			if err == nil {
+				t.Fatalf("Compile accepted derived shape type %q", typ)
+			}
+			if !strings.Contains(err.Error(), "path") {
+				t.Fatalf("error = %q, want path guidance", err)
+			}
+		})
+	}
+}
+
 func TestConstructorStyleTextRecords(t *testing.T) {
 	rt := compileScene(t, `scene ctor_text
 
@@ -230,6 +248,46 @@ text label:
 	}
 }
 
+func TestPathRecordSupportsDottedMaterialFields(t *testing.T) {
+	rt := compileScene(t, `scene path_material
+
+dot a:
+  at: [-1, 0]
+
+dot b:
+  at: [1, 0]
+
+path edge:
+  points: [a.at, b.at]
+  stroke.color: color.gold
+  stroke.width: 0.04
+  stroke.end: arrow
+  draw: 1
+
+| 1s | linear | edge{draw: 0} -> edge
+
+| 1s | linear
+| edge.stroke.color -> color.red
+`)
+	edge := oneEntity(t, rt, "edge")
+	if edge.Type != "path" {
+		t.Fatalf("edge type = %q, want path", edge.Type)
+	}
+	if _, err := asPoints(edge.Fields["points"].Val); err != nil {
+		t.Fatalf("path points not coerced: %v", err)
+	}
+	if got := edge.fstr("stroke.end"); got != "arrow" {
+		t.Fatalf("stroke.end = %q, want arrow", got)
+	}
+	if err := rt.Step(1.5); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if got := fieldColor(edge, "stroke.color", Color{}); got.R <= 0.9 || got.G >= 0.6 {
+		t.Fatalf("stroke.color did not tween toward red: %+v", got)
+	}
+	NewRenderer(320, 180).Frame(rt)
+}
+
 func TestMultilineFieldExpression(t *testing.T) {
 	rt := compileScene(t, `scene multiline_expr
 
@@ -248,8 +306,10 @@ dot p:
 func TestEnterActivatesSelfTransition(t *testing.T) {
 	rt := compileScene(t, `scene enter
 
-square s:
-  side: 2
+path s:
+  points: [[-1, -1], [1, -1], [1, 1], [-1, 1]]
+  closed: 1
+  stroke.color: color.white
 
 | 1s | s{draw: 0} -> s
 `)
@@ -271,8 +331,10 @@ square s:
 func TestMorphActivatesTargetAndDeactivatesSource(t *testing.T) {
 	rt := compileScene(t, `scene morph_presence
 
-square s:
-  side: 2
+path s:
+  points: [[-1, -1], [1, -1], [1, 1], [-1, 1]]
+  closed: 1
+  stroke.color: color.white
 
 dot d:
   radius: 1

@@ -42,20 +42,20 @@ heart[0..n as i]:
     color: color.gold
     opacity: 0.78 + 0.16 * glow
 
-  arrow contour:
-    from: p.at
-    to: heart[next_i].p.at
-    color: color.gold @ 58%
+  path contour:
+    points: [p.at, heart[next_i].p.at]
+    stroke.color: color.gold @ 58%
+    stroke.end: arrow
 
-  arrow facet_a:
-    from: heart[j].p.at
-    to: p.at
-    color: color.orange @ 32%
+  path facet_a:
+    points: [heart[j].p.at, p.at]
+    stroke.color: color.orange @ 32%
+    stroke.end: arrow
 
-  arrow facet_b:
-    from: heart[k].p.at
-    to: p.at
-    color: color.magenta @ 18%
+  path facet_b:
+    points: [heart[k].p.at, p.at]
+    stroke.color: color.magenta @ 18%
+    stroke.end: arrow
 
   dot mid_a:
     at: [
@@ -83,10 +83,10 @@ inner[0..m as i]:
     color: color.pink
     opacity: 0.84 + 0.12 * glow
 
-  arrow link:
-    from: inner[j].p.at
-    to: p.at
-    color: color.purple @ 24%
+  path link:
+    points: [inner[j].p.at, p.at]
+    stroke.color: color.purple @ 24%
+    stroke.end: arrow
 
 center_glow[0..12 as i]:
   a: math.tau * i / 12 + spin
@@ -122,10 +122,10 @@ dot gem:
   color: color.cyan
   opacity: 0.72 + 0.18 * glow
 
-arrow chain:
-  from: heart[14].p.at
-  to: gem.at
-  color: color.gray @ 46%
+path chain:
+  points: [heart[14].p.at, gem.at]
+  stroke.color: color.gray @ 46%
+  stroke.end: arrow
 
 dot gem_glow:
   at: gem.at

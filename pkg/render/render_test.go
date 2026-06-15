@@ -5,10 +5,11 @@ import "testing"
 func TestValidate(t *testing.T) {
 	valid := `scene validate_ok
 
-square s:
+path s:
   at: [0, 0]
-  side: 1
-  stroke: color.white
+  points: [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]]
+  closed: 1
+  stroke.color: color.white
 
 | 1s | s{draw: 0} -> s
 `

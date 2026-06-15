@@ -1,0 +1,199 @@
+scene mobius_ribbon_showcase
+
+n = 72
+phase: 0
+beat: 0
+travel: 0
+yaw: -0.85
+pitch: 0.72
+spread: 0
+zoom: 7.4
+cam_d: 7.1
+
+pulse: beat * (0.58 + 0.42 * sin(phase))
+r_major: 2.08
+half_w: 0.64 * spread * (1 + 0.08 * pulse)
+
+frame frame:
+  at: [0, 0.02]
+  w: zoom
+
+ribbon[0..n as i]:
+  t: math.tau * i / n
+  next_i: (i + 1) % n
+  seg_on: i < n - 1 ? 1 : 0
+  rung_on: i % 2 == 0 ? 1 : 0
+
+  v_a: half_w
+  v_b: -half_w
+
+  xa3: (r_major + v_a * cos(t / 2)) * cos(t)
+  ya3: (r_major + v_a * cos(t / 2)) * sin(t)
+  za3: v_a * sin(t / 2)
+
+  xb3: (r_major + v_b * cos(t / 2)) * cos(t)
+  yb3: (r_major + v_b * cos(t / 2)) * sin(t)
+  zb3: v_b * sin(t / 2)
+
+  xc3: r_major * cos(t)
+  yc3: r_major * sin(t)
+  zc3: 0
+
+  xa1: cos(yaw) * xa3 + sin(yaw) * za3
+  za1: -sin(yaw) * xa3 + cos(yaw) * za3
+  ya1: cos(pitch) * ya3 - sin(pitch) * za1
+  za2: sin(pitch) * ya3 + cos(pitch) * za1
+  sa: cam_d / (cam_d - za2)
+
+  xb1: cos(yaw) * xb3 + sin(yaw) * zb3
+  zb1: -sin(yaw) * xb3 + cos(yaw) * zb3
+  yb1: cos(pitch) * yb3 - sin(pitch) * zb1
+  zb2: sin(pitch) * yb3 + cos(pitch) * zb1
+  sb: cam_d / (cam_d - zb2)
+
+  xc1: cos(yaw) * xc3 + sin(yaw) * zc3
+  zc1: -sin(yaw) * xc3 + cos(yaw) * zc3
+  yc1: cos(pitch) * yc3 - sin(pitch) * zc1
+  zc2: sin(pitch) * yc3 + cos(pitch) * zc1
+  sc: cam_d / (cam_d - zc2)
+
+  a_at: [xa1 * sa, ya1 * sa]
+  b_at: [xb1 * sb, yb1 * sb]
+  c_at: [xc1 * sc, yc1 * sc]
+
+  a_vis: 0.24 + 0.48 * sa / 1.7
+  b_vis: 0.24 + 0.48 * sb / 1.7
+
+  dot a:
+    at: a_at
+    radius: 0.042 + 0.032 * sa + 0.014 * pulse
+    color: color.cyan
+    opacity: a_vis
+
+  dot b:
+    at: b_at
+    radius: 0.042 + 0.032 * sb + 0.014 * pulse
+    color: color.magenta
+    opacity: b_vis
+
+  path edge_a:
+    points: [a.at, ribbon[next_i].a.at]
+    stroke.color: color.cyan @ 74%
+    stroke.end: arrow
+    opacity: seg_on * (0.18 + 0.34 * sa / 1.7)
+    draw: seg_on
+
+  path edge_b:
+    points: [b.at, ribbon[next_i].b.at]
+    stroke.color: color.magenta @ 74%
+    stroke.end: arrow
+    opacity: seg_on * (0.18 + 0.34 * sb / 1.7)
+    draw: seg_on
+
+  path rung:
+    points: [a.at, b.at]
+    stroke.color: color.gold @ 40%
+    stroke.end: arrow
+    opacity: rung_on * (0.12 + 0.26 * abs(cos(t / 2 + phase / 3)) + 0.18 * pulse)
+    draw: rung_on
+
+  dot core:
+    at: c_at
+    radius: 0.020 + 0.016 * pulse
+    color: color.white
+    opacity: 0.08 + 0.16 * sc / 1.5
+
+trail[0..14 as i]:
+  fade: 1 - i / 14
+  t: travel - 0.18 * i
+  v: 0.46 * sin(t / 2)
+
+  x3: (r_major + v * cos(t / 2)) * cos(t)
+  y3: (r_major + v * cos(t / 2)) * sin(t)
+  z3: v * sin(t / 2)
+
+  x1: cos(yaw) * x3 + sin(yaw) * z3
+  z1: -sin(yaw) * x3 + cos(yaw) * z3
+  y1: cos(pitch) * y3 - sin(pitch) * z1
+  z2: sin(pitch) * y3 + cos(pitch) * z1
+  s: cam_d / (cam_d - z2)
+
+  dot p:
+    at: [x1 * s, y1 * s]
+    radius: (0.036 + 0.050 * fade) * s / 1.45
+    color: color.yellow
+    opacity: fade * (0.18 + 0.70 * s / 1.8)
+
+dot bead:
+  at: trail[0].p.at
+  radius: 0.12 + 0.04 * pulse
+  color: color.yellow
+  opacity: 0.96
+
+dot bead_glow:
+  at: bead.at
+  radius: 0.22 + 0.08 * pulse
+  color: color.gold
+  opacity: 0.16 + 0.14 * pulse
+
+halo[0..18 as i]:
+  a: math.tau * i / 18 + 0.55 * phase
+  r: 3.18 + 0.10 * pulse
+
+  dot p:
+    at: [
+      r * cos(a),
+      2.72 * sin(a)
+    ]
+    radius: 0.018 + 0.016 * pulse
+    color: color.blue
+    opacity: 0.05 + 0.15 * pulse
+
+| 0.75s | smooth | stagger 0.012s
+| ribbon[* as i].core{opacity: 0, scale: 0.2} -> ribbon[i].core
+| halo[* as i].p{opacity: 0, scale: 0.2} -> halo[i].p
+
+| 0.95s | smooth
+| spread -> 1
+| beat -> 1
+| zoom -> 6.6
+
+| 0.95s | smooth | stagger 0.010s
+| ribbon[* as i].a{opacity: 0, scale: 0.2} -> ribbon[i].a
+| ribbon[* as i].b{opacity: 0, scale: 0.2} -> ribbon[i].b
+
+| 1.0s | smooth | stagger 0.010s
+| ribbon[* as i].edge_a{draw: 0, opacity: 0} -> ribbon[i].edge_a
+| ribbon[* as i].edge_b{draw: 0, opacity: 0} -> ribbon[i].edge_b
+| ribbon[* as i].rung{draw: 0, opacity: 0} -> ribbon[i].rung
+| trail[* as i].p{opacity: 0, scale: 0.2} -> trail[i].p
+| bead{opacity: 0, scale: 0.2} -> bead
+| bead_glow{opacity: 0, scale: 0.2} -> bead_glow
+
+| 2.4s | smooth
+| zoom -> 5.8
+| yaw -> 0.35
+| pitch -> 0.88
+| phase -> 1.55 * math.pi
+| travel -> 1.35 * math.pi
+| zoom -> 5.0
+| yaw -> 1.68
+| pitch -> 0.30
+| phase -> 2.95 * math.pi
+| travel -> 2.65 * math.pi
+
+| 2.5s | smooth
+| zoom -> 4.8
+| yaw -> 2.82
+| pitch -> -0.14
+| phase -> 4.35 * math.pi
+| travel -> 3.95 * math.pi
+
+| 2.6s | smooth
+| zoom -> 5.9
+| yaw -> 4.08
+| pitch -> 0.74
+| phase -> 5.65 * math.pi
+| travel -> 5.2 * math.pi
+
+| 1.2s

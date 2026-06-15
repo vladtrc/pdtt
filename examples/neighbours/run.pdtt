@@ -30,10 +30,10 @@ ring[0..n as i]:
     radius: 0.09
     color: color.cyan
 
-  arrow chord:
-    from: ring[prev_i].p.at
-    to: p.at
-    color: color.gray @ 45%
+  path chord:
+    points: [ring[prev_i].p.at, p.at]
+    stroke.color: color.gray @ 45%
+    stroke.end: arrow
 
   dot mid:
     at: [
