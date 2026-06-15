@@ -12,10 +12,10 @@ The morph rewrite (`internal/pdtt/morph.go`) fixed one instance of this (the
 
 | # | Concept | Severity | Contained? |
 |---|---------|----------|------------|
-| 01 | [Untyped animation state (`a.start []Value`)](01-untyped-anim-state.md) | high | yes |
+| 01 | [Untyped animation state (`a.start []Value`)](01-untyped-anim-state.md) | high | yes — **done** (morph migrated; rest is legitimate) |
 | 02 | [`Vec` is 3D in a 2D system](02-vec-is-3d-in-a-2d-system.md) | medium | no (wide) |
 | 03 | [Magic-string types (`"__family_proxy__"`)](03-magic-string-types.md) | medium | yes |
-| 04 | [`compile.go` mixes plan-time and run-time](04-compile-mixes-plan-and-runtime.md) | high | no (large) |
+| 04 | [`compile.go` mixes plan-time and run-time](04-compile-mixes-plan-and-runtime.md) | high | seam **established** on morph; rest incremental |
 | 05 | [Open/closed split still in the renderer](05-open-closed-split-in-renderer.md) | low | yes |
 
 
@@ -47,3 +47,13 @@ u think not as smart llm could handle these?
   So the useful move, if you want to hand any of these off cheaply: let me convert the ones you pick
   (03 and 05 are the natural first two) into tight execution specs — decision stated, steps listed,
   the test to add named up front. Want me to do that for any of them?
+
+
+  What this hands to the cheaper model now
+
+  04's remaining verbs are no longer a design problem — they're mechanical: copy the xAnim{ start;
+  step } shape, one verb per slice, each behind a stepping test like the two I added. The judgment
+  call is spent; the grind is offloadable. That's the clean line you wanted between what needed
+  taste and what doesn't.
+
+  I did not commit — say the word and I'll commit this slice (and it's a natural standalone commit).

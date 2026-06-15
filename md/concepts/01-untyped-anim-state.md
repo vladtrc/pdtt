@@ -1,5 +1,20 @@
 # 01 — Untyped animation state (`a.start []Value`)
 
+## Status
+
+**Morph migrated.** Morph was the *only* verb abusing `a.start` as a typed
+field tuple (`start[0]`=srcOp, `[1]`=dstOp, `[2]`=offset, `[3]`=srcOffset). It
+now carries a typed `morphAnim` struct on `Anim.state`, captured in
+`morphAnim.start` and read in `morphAnim.step` — no positional access, no
+`asFloat/asVec` noise, slot collisions impossible. Guarded by
+`TestMorphCrossfadeStepsOpacityAndOffset` and `TestMorphOutlineStepsContoursAndHandoff`.
+
+Every *remaining* use of `a.start` (set, tween, integrator, array) is the
+**legitimate** one: a slice parallel to `Targets`, uniform type per slot,
+position = target index. Those are correct and should be left alone — a blanket
+"typed state everywhere" migration would add risk for no gain. 01 is now closed
+in practice; what's left is not a bug.
+
 ## The assumption
 
 Every animation captures its start state in a single untyped slice:

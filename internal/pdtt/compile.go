@@ -170,9 +170,10 @@ type Anim struct {
 	Line    int
 
 	started, done bool
-	start         []Value // captured start values per target
+	start         []Value // captured start values per target (uniform, target-parallel verbs)
 	goal          []Value
 	textMorph     *textMorphAnim
+	state         any // typed per-verb run-time state (e.g. *morphAnim); replaces positional start[]
 }
 
 type textMorphAnim struct {
@@ -2130,6 +2131,128 @@ func (rt *Runtime) fillRecordArrow(a *Anim, lhs, rhs Expr, binds map[string]Valu
 	}
 }
 
+// morphAnim is the captured plan + run-time state for a single morph pair.
+// Lifting it out of the Start/Update closures gives morph an inspectable state
+// value and turns its per-frame logic into a pure step method — the typed-state
+// (01) and plan/run-split (04) seam, proven on the hardest verb first.
+type morphAnim struct {
+	// Plan: fixed when the morph is expanded.
+	rhs      Expr
+	srcOpRef Ref
+	srcPos   func() Vec
+	srcMove  *Entity // nil when the source is a group part
+
+	// Run-time: resolved and captured in start.
+	dst      *Entity
+	dstOpRef Ref
+	outline  bool
+	srcCtrs  [][]Vec
+	dstCtrs  [][]Vec
+	srcStyle shapeMorphStyle
+	dstStyle shapeMorphStyle
+
+	srcOp        float64 // source opacity at u=0
+	dstOp        float64 // destination opacity at u=0
+	offset       Vec     // srcPos - dst.at: the crossfade glide
+	srcOffset    Vec     // source's own offset at u=0
+	hasSrcOffset bool
+}
+
+// start resolves the destination and captures the values the step needs.
+func (m *morphAnim) start(a *Anim, rt *Runtime) error {
+	s := &Scope{rt: rt, binds: a.Binds}
+	dv, err := s.Eval(m.rhs)
+	if err != nil {
+		return fmt.Errorf("line %d: morph target: %v", a.Line, err)
+	}
+	switch x := dv.(type) {
+	case *Entity:
+		m.dst = x
+	case *Group:
+		if len(x.Items) == 1 {
+			m.dst = x.Items[0]
+		}
+	}
+	if m.dst == nil {
+		return fmt.Errorf("line %d: morph target is %T", a.Line, dv)
+	}
+	m.dstOpRef = FieldRef{E: m.dst, F: m.dst.field("opacity")}
+	if m.srcMove != nil {
+		m.srcMove.Active = true
+	}
+	dstWasActive := m.dst.Active
+	m.dst.Active = true
+	// The morph now owns the source's visibility: cancel any held post-tween
+	// that was pinning the source opacity, so the morph's fade-out at u>=1 sticks.
+	rt.clearPost(m.srcOpRef.Key())
+	m.outline = m.srcMove != nil && canOutline(m.srcMove.Type) && canOutline(m.dst.Type)
+	if m.outline {
+		sc := morphLoops(m.srcMove)
+		dc := morphLoops(m.dst)
+		if len(sc) == 0 || len(dc) == 0 {
+			m.outline = false
+		} else {
+			m.srcCtrs, m.dstCtrs = matchLoops(sc, dc, morphSamples)
+		}
+	}
+	if m.outline {
+		m.srcStyle = shapeStyleForMorph(m.srcMove)
+		m.dstStyle = shapeStyleForMorph(m.dst)
+		m.dstOpRef.Set(0.0)
+	}
+	dstStartOpacity, _ := asFloat(m.dstOpRef.Get())
+	if !dstWasActive {
+		dstStartOpacity = 0.0
+		m.dstOpRef.Set(0.0)
+	}
+	m.srcOp, _ = asFloat(m.srcOpRef.Get())
+	m.dstOp = dstStartOpacity
+	if !m.outline {
+		m.offset = m.srcPos().Sub(m.dst.fvec("at"))
+		if m.srcMove != nil {
+			m.srcOffset = m.srcMove.Offset
+			m.hasSrcOffset = true
+		}
+	}
+	return nil
+}
+
+// step applies the morph at interpolation parameter u. Pure: reads m, writes
+// refs/entities, no closure captures and no rt dependency.
+func (m *morphAnim) step(u float64) {
+	s0 := m.srcOp
+	if m.outline && m.srcMove != nil && len(m.srcCtrs) == len(m.dstCtrs) && len(m.srcCtrs) > 0 {
+		m.srcMove.MorphContours = lerpLoops(m.srcCtrs, m.dstCtrs, u)
+		morphStyleAt(m.srcStyle, m.dstStyle, u).apply(m.srcMove)
+		m.srcOpRef.Set(s0)
+		m.dstOpRef.Set(0.0)
+		if u >= 1 {
+			m.srcMove.MorphContours = nil
+			m.srcMove.MorphHasStroke = false
+			m.srcMove.MorphStrokeW = 0
+			m.srcMove.MorphHasFill = false
+			m.srcOpRef.Set(0.0)
+			m.srcMove.Active = false
+			m.dstOpRef.Set(1.0)
+			m.dst.Active = true
+		}
+		return
+	}
+	off := m.offset
+	m.srcOpRef.Set(lerp(s0, 0, u))
+	m.dstOpRef.Set(lerp(m.dstOp, 1, u))
+	m.dst.Offset = off.Mul(1 - u)
+	if m.srcMove != nil && m.hasSrcOffset {
+		m.srcMove.Offset = m.srcOffset.Sub(off.Mul(u))
+	}
+	if u >= 1 {
+		if m.srcMove != nil {
+			m.srcMove.Active = false
+		}
+		m.dst.Active = true
+	}
+}
+
 func (rt *Runtime) expandMorph(row Row, w winState, mk func(from, to float64, eb map[string]Value) *Anim) error {
 	binds := mk(0, 0, nil).Binds
 	srcEnts, srcParts, err := rt.verbSubjects(row.Op.LHS, binds)
@@ -2152,117 +2275,21 @@ func (rt *Runtime) expandMorph(row Row, w winState, mk func(from, to float64, eb
 		from := w.from + float64(k)*w.stagger
 		a := mk(from, w.to, map[string]Value{"it": it})
 
-		var srcOpRef Ref
-		var srcPos func() Vec
-		var srcMove *Entity
-		var outlineMorph bool
-		var srcCtrs, dstCtrs [][]Vec
-		var srcShapeStyle, dstShapeStyle shapeMorphStyle
+		m := &morphAnim{rhs: rhs}
 		if srcP != nil {
-			srcOpRef = PartOpacityRef{P: srcP}
-			srcPos = func() Vec { at, _, _ := partBox(srcP); return at }
+			m.srcOpRef = PartOpacityRef{P: srcP}
+			m.srcPos = func() Vec { at, _, _ := partBox(srcP); return at }
 		} else {
 			e := srcE
-			srcMove = e
-			srcOpRef = FieldRef{E: e, F: e.field("opacity")}
-			srcPos = func() Vec { return e.fvec("at").Add(e.Offset) }
+			m.srcMove = e
+			m.srcOpRef = FieldRef{E: e, F: e.field("opacity")}
+			m.srcPos = func() Vec { return e.fvec("at").Add(e.Offset) }
 		}
 
-		var dst *Entity
-		var dstOpRef Ref
-		a.Targets = []Ref{srcOpRef}
-		a.Start = func(a *Anim, rt *Runtime) error {
-			s := &Scope{rt: rt, binds: a.Binds}
-			dv, err := s.Eval(rhs)
-			if err != nil {
-				return fmt.Errorf("line %d: morph target: %v", a.Line, err)
-			}
-			switch x := dv.(type) {
-			case *Entity:
-				dst = x
-			case *Group:
-				if len(x.Items) == 1 {
-					dst = x.Items[0]
-				}
-			}
-			if dst == nil {
-				return fmt.Errorf("line %d: morph target is %T", a.Line, dv)
-			}
-			dstOpRef = FieldRef{E: dst, F: dst.field("opacity")}
-			if srcMove != nil {
-				srcMove.Active = true
-			}
-			dstWasActive := dst.Active
-			dst.Active = true
-			// The morph now owns the source's visibility: cancel any held
-			// post-tween that was pinning the source opacity (e.g. a prior
-			// `src.opacity -> 1` fade-in), so the morph's fade-out at u>=1 sticks.
-			rt.clearPost(srcOpRef.Key())
-			outlineMorph = srcMove != nil && canOutline(srcMove.Type) && canOutline(dst.Type)
-			if outlineMorph {
-				sc := morphLoops(srcMove)
-				dc := morphLoops(dst)
-				if len(sc) == 0 || len(dc) == 0 {
-					outlineMorph = false
-				} else {
-					srcCtrs, dstCtrs = matchLoops(sc, dc, morphSamples)
-				}
-			}
-			if outlineMorph {
-				srcShapeStyle = shapeStyleForMorph(srcMove)
-				dstShapeStyle = shapeStyleForMorph(dst)
-				dstOpRef.Set(0.0)
-			}
-			dstStartOpacity := dstOpRef.Get()
-			if !dstWasActive {
-				dstStartOpacity = 0.0
-				dstOpRef.Set(0.0)
-			}
-			start := []Value{srcOpRef.Get(), dstStartOpacity}
-			if !outlineMorph {
-				start = append(start, srcPos().Sub(dst.fvec("at")))
-			}
-			if srcMove != nil && !outlineMorph {
-				start = append(start, srcMove.Offset)
-			}
-			a.start = start
-			return nil
-		}
-		a.Update = func(a *Anim, rt *Runtime, u float64) {
-			s0, _ := asFloat(a.start[0])
-			if outlineMorph && srcMove != nil && len(srcCtrs) == len(dstCtrs) && len(srcCtrs) > 0 {
-				srcMove.MorphContours = lerpLoops(srcCtrs, dstCtrs, u)
-				morphStyleAt(srcShapeStyle, dstShapeStyle, u).apply(srcMove)
-				srcOpRef.Set(s0)
-				dstOpRef.Set(0.0)
-				if u >= 1 {
-					srcMove.MorphContours = nil
-					srcMove.MorphHasStroke = false
-					srcMove.MorphStrokeW = 0
-					srcMove.MorphHasFill = false
-					srcOpRef.Set(0.0)
-					srcMove.Active = false
-					dstOpRef.Set(1.0)
-					dst.Active = true
-				}
-				return
-			}
-			d0, _ := asFloat(a.start[1])
-			off, _ := asVec(a.start[2])
-			srcOpRef.Set(lerp(s0, 0, u))
-			dstOpRef.Set(lerp(d0, 1, u))
-			dst.Offset = off.Mul(1 - u)
-			if srcMove != nil && len(a.start) > 3 {
-				srcOff, _ := asVec(a.start[3])
-				srcMove.Offset = srcOff.Sub(off.Mul(u))
-			}
-			if u >= 1 {
-				if srcMove != nil {
-					srcMove.Active = false
-				}
-				dst.Active = true
-			}
-		}
+		a.Targets = []Ref{m.srcOpRef}
+		a.state = m
+		a.Start = func(a *Anim, rt *Runtime) error { return a.state.(*morphAnim).start(a, rt) }
+		a.Update = func(a *Anim, rt *Runtime, u float64) { a.state.(*morphAnim).step(u) }
 		rt.Anims = append(rt.Anims, a)
 	}
 

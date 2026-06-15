@@ -1,5 +1,20 @@
 # 04 — `compile.go` mixes plan-time and run-time
 
+## Status
+
+**Seam established on morph (the wedge).** Morph's `Start`/`Update` are no
+longer 100 lines of closure over captured locals. They're thin adapters over a
+`morphAnim` value (`Anim.state`): `morphAnim.start` resolves the plan and
+captures run-time state; `morphAnim.step(u)` is a **pure** stepper — reads the
+struct, writes refs/entities, no closure captures, no `rt`. This is exactly the
+plan/eval split this doc asks for, proven on the hardest verb first and paired
+with [01 — typed animation state](01-untyped-anim-state.md).
+
+The big-bang 2900-line split is still not worth doing. The remaining verbs can
+follow the same `xAnim{ start; step }` pattern **incrementally**, one verb per
+slice, each behind a stepping test — a shape now exists to copy. Those follow-up
+migrations are mechanical and offloadable; the design call (this seam) is done.
+
 ## The assumption
 
 `compile.go` is ~2900 lines and "compile" means two different jobs at once:

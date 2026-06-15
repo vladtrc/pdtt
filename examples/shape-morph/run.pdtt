@@ -97,57 +97,57 @@ text caption:
 | 0.55s | smooth
 | stick.stroke.end -> arrow
 | -.8 | stick.stroke.color -> color.gold
-| -.3 | caption.text -> "stroke.end -> arrow"
+| -.3 | linear | caption.text -> "stroke.end -> arrow"
 | caption.color -> color.gold
 
 | 2.55s | smooth
 | -.8 | morph | stick -> circ
-| -.3 | caption.text -> "circle{radius: 0.85}"
+| -.3 | linear | caption.text -> "circle{radius: 0.85}"
 | caption.color -> color.gold
 
 | 2.55s | smooth
 | -.8 | morph | circ -> circ_f
-| -.3 | caption.text -> "circle{radius: 1.35}"
+| -.3 | linear | caption.text -> "circle{radius: 1.35}"
 | caption.color -> color.white
 
 | 2.55s | smooth
 | -.8 | morph | circ_f -> ell
-| -.3 | caption.text -> "ellipse{rx: 1.55, ry: 0.85}"
+| -.3 | linear | caption.text -> "ellipse{rx: 1.55, ry: 0.85}"
 | caption.color -> color.pink
 
 | 2.55s | smooth
 | -.8 | morph | ell -> ell_f
-| -.3 | caption.text -> "ellipse{rx: 1.15, ry: 1.55}"
+| -.3 | linear | caption.text -> "ellipse{rx: 1.15, ry: 1.55}"
 | caption.color -> color.gold
 
 | 2.55s | smooth
 | -.8 | morph | ell_f -> arc_p
-| -.3 | caption.text -> "arc{radius: 1.45, start: 0, end: math.pi / 2}"
+| -.3 | linear | caption.text -> "arc{radius: 1.45, start: 0, end: math.pi / 2}"
 | caption.color -> color.white
 
 | 2.55s | smooth
 | -.8 | morph | arc_p -> sector_p
-| -.3 | caption.text -> "sector{radius: 1.45, start: 0, end: math.pi / 3}"
+| -.3 | linear | caption.text -> "sector{radius: 1.45, start: 0, end: math.pi / 3}"
 | caption.color -> color.white
 
 | 2.55s | smooth
 | -.8 | morph | sector_p -> rect_p
-| -.3 | caption.text -> "rect{w: 2.2, h: 1.15}"
+| -.3 | linear | caption.text -> "rect{w: 2.2, h: 1.15}"
 | caption.color -> color.gold
 
 | 2.55s | smooth
 | -.8 | morph | rect_p -> rect_f
-| -.3 | caption.text -> "rect{w: 1.65, h: 1.65, corner_radius: 0.14}"
+| -.3 | linear | caption.text -> "rect{w: 1.65, h: 1.65, corner_radius: 0.14}"
 | caption.color -> color.white
 
 | 2.55s | smooth
 | -.8 | morph | rect_f -> poly
-| -.3 | caption.text -> "regular_polygon{sides: 6, radius: 1.25, angle: math.pi / 6}"
+| -.3 | linear | caption.text -> "regular_polygon{sides: 6, radius: 1.25, angle: math.pi / 6}"
 | caption.color -> color.cyan
 
 | 2.55s | smooth
 | -.8 | morph | poly -> poly_f
-| -.3 | caption.text -> "regular_polygon{sides: 5, radius: 1.45, angle: 0}"
+| -.3 | linear | caption.text -> "regular_polygon{sides: 5, radius: 1.45, angle: 0}"
 | caption.color -> color.gold
 
 | 0.6s | smooth
