@@ -150,6 +150,39 @@ roots[0..2 as i]:
 	}
 }
 
+func TestFamilyMemberCanDependOnSiblingInstanceMember(t *testing.T) {
+	rt := compileScene(t, `scene family_neighbor_dependency
+
+n = 3
+phase: 0
+
+ring[0..n as i]:
+  a: math.tau * i / n + phase
+  prev_i: (i - 1 + n) % n
+
+  dot p:
+    at: [cos(a), sin(a)]
+
+  arrow chord:
+    from: ring[prev_i].p.at
+    to: p.at
+
+| 1s | linear
+| phase -> math.tau
+`)
+
+	if err := rt.Step(0.5); err != nil {
+		t.Fatalf("Step(0.5): %v", err)
+	}
+
+	p0 := oneEntity(t, rt, familyMemberName("ring", 0, "p"))
+	p2 := oneEntity(t, rt, familyMemberName("ring", 2, "p"))
+	chord0 := oneEntity(t, rt, familyMemberName("ring", 0, "chord"))
+
+	assertVecNear(t, "ring[0].chord.from", chord0.fvec("from"), p2.fvec("at"))
+	assertVecNear(t, "ring[0].chord.to", chord0.fvec("to"), p0.fvec("at"))
+}
+
 func TestSnapshotColonBindingFreezesRecord(t *testing.T) {
 	rt := compileScene(t, `scene snapshot_freeze
 

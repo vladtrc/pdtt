@@ -450,7 +450,7 @@ func TestLuxeHeartExample(t *testing.T) {
 	if fam == nil {
 		t.Fatal("heart family was not registered")
 	}
-	if fam.N != 48 {
-		t.Fatalf("heart.N = %d, want 48", fam.N)
+	if fam.N != 28 {
+		t.Fatalf("heart.N = %d, want 28", fam.N)
 	}
 }

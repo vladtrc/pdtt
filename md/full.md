@@ -40,11 +40,22 @@ Top-level forms:
 - `type name:` creates one record
 - `text("...") name:` and `typst("...") name:` create text records with the `text`
   field already set
-- `family[domain as i]:` creates a family of member records over an integer domain
+- `family[domain as i]:` creates a family of member records over an integer domain,
+  commonly `family[0..n as i]:`
 - Lines beginning with `|` create time blocks
 
 Blank lines end normal record blocks and time blocks. Blank lines may separate members
 inside a family.
+
+Long expressions may span lines inside balanced `[...]` or `(...)`. Otherwise a newline
+ends the expression.
+
+```pdtt
+at: [
+  r * cos(a),
+  0.1 + r * sin(a)
+]
+```
 
 Comments start with `#` outside strings.
 
@@ -328,30 +339,37 @@ Broadcast `[*]` expands one row per element:
 Use `[* as i]` when the RHS needs the same index. Plain `[*]` also binds canonical
 `i` and `it` for simple cases.
 
-Families group several member records per domain key:
+Families group several member records per domain key. The domain may be a range or a
+variable that evaluates to unique integers; `0..n` means `0` through `n-1`.
 
 ```pdtt
 val: [-3, -1, 3]
 cols: [color.red, color.green, color.blue]
 
 roots[val.indices as i]:
+  x: val[i]
+  label_text: fmt("{:.2f}", x)
+
   dot mark:
-    at: ax.point(val[i], 0)
+    at: ax.point(x, 0)
     radius: 0.095
     color: cols[i]
 
   arrow hit:
-    from: ax.point(val[i], -1.2)
+    from: ax.point(x, -1.2)
     to: mark.at
     color: cols[i]
 
   text n:
-    text: fmt("{:.2f}", val[i])
+    text: label_text
     at: below(mark, 0.2)
     color: cols[i]
 ```
 
 Access family members with `roots[i].mark`, `roots[i].hit`, `roots[i].n`.
+Indented `name: expr` lines directly inside a family are local live bindings for that
+family element. Member records may reuse them, and they update when their dependencies
+change.
 
 Broadcast family members like this:
 
@@ -368,8 +386,27 @@ If many objects derive from a list, animate the list and let live fields follow:
 | val[* as i] -> [-2, 1, 3][i]
 ```
 
-Family domains must evaluate to unique integers. `0..n` produces integers from `0`
-through `n-1`.
+Family members may reference other members, including through computed indices. This is
+useful for neighbors:
+
+```pdtt
+n = 18
+phase: 0
+
+ring[0..n as i]:
+  a: math.tau * i / n + phase
+  prev_i: (i - 1 + n) % n
+
+  dot p:
+    at: [2 * cos(a), 2 * sin(a)]
+
+  arrow chord:
+    from: ring[prev_i].p.at
+    to: p.at
+```
+
+The dependency graph follows these indexed references, so if `phase` tweens, both `p`
+and `chord` update during the tween.
 
 ## Expressions
 
@@ -379,6 +416,7 @@ Supported expression forms:
 - strings: `"hello"`
 - lists/vectors: `[0, 1]`, `[x, y, z]`
 - ranges: `0..n`
+- multiline lists/parentheses while brackets are balanced
 - arithmetic: `+`, `-`, `*`, `/`, `%`
 - comparisons: `==`, `!=`, `<`, `>`, `<=`, `>=`
 - ternary: `cond ? a : b`

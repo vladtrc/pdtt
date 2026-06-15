@@ -1,0 +1,66 @@
+scene family_neighbor_dependency
+
+n = 18
+phase: 0
+ripple: 0
+
+frame frame:
+  at: [0, 0]
+  w: 9.4
+
+text("Ссылки на соседний элемент family") title:
+  at: [0, 3.0]
+  scale: 0.5
+  color: color.white
+
+text("каждая точка связана с предыдущей") subtitle:
+  at: [0, 2.55]
+  scale: 0.36
+  color: color.light_gray
+
+ring[0..n as i]:
+  a: math.tau * i / n + phase
+  r: 2.2 + 0.35 * sin(2 * a + ripple)
+  x: r * cos(a)
+  y: 0.1 + r * sin(a)
+  prev_i: (i - 1 + n) % n
+
+  dot p:
+    at: [x, y]
+    radius: 0.09
+    color: color.cyan
+
+  arrow chord:
+    from: ring[prev_i].p.at
+    to: p.at
+    color: color.gray @ 45%
+
+  dot mid:
+    at: [
+      (ring[prev_i].p.at.x + p.at.x) / 2,
+      (ring[prev_i].p.at.y + p.at.y) / 2
+    ]
+    radius: 0.04
+    color: color.yellow
+
+| 0.8s | smooth
+| title{opacity: 0} -> title
+| subtitle{opacity: 0} -> subtitle
+
+| 1.1s | smooth | stagger 0.025s
+| ring[* as i].p{opacity: 0, scale: 0.2} -> ring[i].p
+
+| 0.9s | smooth | stagger 0.02s
+| ring[* as i].chord{draw: 0} -> ring[i].chord
+| ring[* as i].mid{opacity: 0, scale: 0.2} -> ring[i].mid
+
+| 4.0s | linear
+| phase -> math.tau
+
+| 1.2s | smooth
+| ripple -> math.tau
+
+| 4.0s | linear
+| phase -> 2 * math.tau
+
+| 1.4s

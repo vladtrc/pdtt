@@ -196,6 +196,9 @@ type Runtime struct {
 	liveGlobals []*GVar // live global variables (colon-binding)
 	post        map[string]*PostAssign
 	warned      map[string]bool
+
+	writerAnims  map[string][]*Anim
+	globalWriter map[string]bool
 }
 
 type fieldSlot struct {
@@ -249,6 +252,9 @@ func (rt *Runtime) setPost(ref Ref, rhs Expr, binds map[string]Value, elemIdx, e
 }
 
 func (rt *Runtime) globalHasWriter(name string) bool {
+	if rt.globalWriter != nil {
+		return rt.globalWriter[name]
+	}
 	elemPrefix := name + "["
 	for _, a := range rt.Anims {
 		for _, ref := range a.Targets {
@@ -265,6 +271,9 @@ func (rt *Runtime) globalHasWriter(name string) bool {
 }
 
 func (rt *Runtime) fieldHasWriter(key string) bool {
+	if rt.writerAnims != nil {
+		return len(rt.writerAnims[key]) > 0
+	}
 	for _, a := range rt.Anims {
 		for _, ref := range a.Targets {
 			if ref != nil && ref.Key() == key {
@@ -276,7 +285,11 @@ func (rt *Runtime) fieldHasWriter(key string) bool {
 }
 
 func (rt *Runtime) fieldHasActiveWriter(key string, t float64) bool {
-	for _, a := range rt.Anims {
+	anims := rt.Anims
+	if rt.writerAnims != nil {
+		anims = rt.writerAnims[key]
+	}
+	for _, a := range anims {
 		if t+1e-9 < a.T0 || t > a.T1+1e-9 {
 			continue
 		}
@@ -287,6 +300,25 @@ func (rt *Runtime) fieldHasActiveWriter(key string, t float64) bool {
 		}
 	}
 	return false
+}
+
+func (rt *Runtime) indexWriters() {
+	rt.writerAnims = map[string][]*Anim{}
+	rt.globalWriter = map[string]bool{}
+	for _, a := range rt.Anims {
+		for _, ref := range a.Targets {
+			if ref == nil {
+				continue
+			}
+			key := ref.Key()
+			rt.writerAnims[key] = append(rt.writerAnims[key], a)
+			if strings.Contains(key, ".") {
+				continue
+			}
+			name, _, _ := strings.Cut(key, "[")
+			rt.globalWriter[name] = true
+		}
+	}
 }
 
 func evalTweenGoal(rt *Runtime, rhs Expr, binds map[string]Value, elemIdx, elemN int, cur Value) (Value, error) {
@@ -2294,6 +2326,8 @@ func (rt *Runtime) initFields() error {
 // livenessPass classifies fields static/live/rate, enforces one writer, and
 // records the per-frame evaluation order for live fields.
 func (rt *Runtime) livenessPass() error {
+	rt.indexWriters()
+
 	// roots: score-written keys (anim targets) and rate fields
 	written := map[string]*Anim{}
 	for _, a := range rt.Anims {
@@ -2446,6 +2480,7 @@ func (rt *Runtime) livenessPass() error {
 func entityExprDeps(e *Entity, expr Expr) map[string]bool {
 	deps := map[string]bool{}
 	exprDeps(expr, deps)
+	addResolvedAttrDeps(e, expr, deps)
 
 	it, ok := e.It.(ItVal)
 	if !ok {
@@ -2489,6 +2524,71 @@ func entityExprDeps(e *Entity, expr Expr) map[string]bool {
 		}
 	}
 	return deps
+}
+
+func addResolvedAttrDeps(e *Entity, expr Expr, deps map[string]bool) {
+	s := &Scope{rt: e.rt, binds: map[string]Value{"it": e.It}}
+	var walk func(Expr)
+	walk = func(expr Expr) {
+		switch v := expr.(type) {
+		case AttrE:
+			if base, err := s.Eval(v.X); err == nil {
+				switch b := base.(type) {
+				case *Entity:
+					deps[entityAttrDepKey(b, v.Name)] = true
+				case *PartState:
+					deps[b.E.Name+".parts."+b.Name+"."+v.Name] = true
+				}
+			}
+			if val, err := s.Eval(v); err == nil {
+				if ent, ok := val.(*Entity); ok {
+					deps[ent.Name] = true
+				}
+			}
+			walk(v.X)
+		case IndexE:
+			walk(v.X)
+			if v.I != nil {
+				walk(v.I)
+			}
+		case CallE:
+			walk(v.Fn)
+			for _, a := range v.Args {
+				walk(a)
+			}
+		case BinE:
+			walk(v.L)
+			walk(v.R)
+		case RangeE:
+			walk(v.Start)
+			walk(v.End)
+		case UnE:
+			walk(v.X)
+		case ListE:
+			for _, it := range v.Items {
+				walk(it)
+			}
+		case CondE:
+			walk(v.Cond)
+			walk(v.Then)
+			walk(v.Else)
+		case AlphaE:
+			walk(v.X)
+		case SnapshotE:
+			// snapshot is frozen, matching exprDeps.
+		}
+	}
+	walk(expr)
+}
+
+func entityAttrDepKey(e *Entity, attr string) string {
+	if _, ok := e.Fields[attr]; ok {
+		return e.Name + "." + attr
+	}
+	if defaultFieldVal(e.Type, attr) != nil {
+		return e.Name + "." + attr
+	}
+	return e.Name
 }
 
 func isGeomField(name string) bool {
