@@ -1,6 +1,11 @@
 package pdtt
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func blockOf(t *testing.T, src string) *BlockStmt {
 	t.Helper()
@@ -183,6 +188,63 @@ typst("x^2 + y^2") formula:
 	}
 }
 
+func TestConstructorStyleTextWithParenInString(t *testing.T) {
+	rt := compileScene(t, `scene ctor_paren
+
+text("a) b") label:
+  at: [0, 0]
+`)
+	label := oneEntity(t, rt, "label")
+	if label.Type != "text" || label.fstr("text") != "a) b" {
+		t.Fatalf("label = type %q text %q, want text/%q", label.Type, label.fstr("text"), "a) b")
+	}
+}
+
+func TestUnclosedMultilineFieldExpressionParseError(t *testing.T) {
+	_, err := ParseFile("dot p:\n  at: [\n    1,\n    2\n")
+	if err == nil {
+		t.Fatal("expected parse error for unclosed delimiter")
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "unclosed") {
+		t.Fatalf("error = %q, want unclosed delimiter mention", err)
+	}
+	if !strings.Contains(msg, "end of file") {
+		t.Fatalf("error = %q, want EOF mention", err)
+	}
+	if !strings.Contains(err.Error(), "line 2:") {
+		t.Fatalf("error = %q, want start line 2", err)
+	}
+}
+
+func TestPlainTextRecordCanUseTextField(t *testing.T) {
+	rt := compileScene(t, `scene text_field
+
+text label:
+  text: "plain"
+  at: [0, 0]
+`)
+	label := oneEntity(t, rt, "label")
+	if label.Type != "text" || label.fstr("text") != "plain" {
+		t.Fatalf("label = type %q text %q, want text/plain", label.Type, label.fstr("text"))
+	}
+}
+
+func TestMultilineFieldExpression(t *testing.T) {
+	rt := compileScene(t, `scene multiline_expr
+
+dot p:
+  at: [
+    1 + 2,
+    3 + 4
+  ]
+`)
+	p := oneEntity(t, rt, "p")
+	if got := p.fvec("at"); got != (Vec{3, 7, 0}) {
+		t.Fatalf("p.at = %v, want [3 7 0]", got)
+	}
+}
+
 func TestEnterActivatesSelfTransition(t *testing.T) {
 	rt := compileScene(t, `scene enter
 
@@ -239,5 +301,147 @@ func TestGoneTargetRejected(t *testing.T) {
 	_, err := ParseFile("| 1s | d -> gone\n")
 	if err == nil {
 		t.Fatal("expected gone target to be rejected")
+	}
+}
+
+func TestFlatRecordFieldRequiresIndent(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "text field",
+			src:  "text heart:\ntext: \"x\"",
+		},
+		{
+			name: "at field",
+			src:  "dot p:\nat: [0,0]",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseFile(tc.src)
+			if err == nil {
+				t.Fatal("expected parse error for flat record field")
+			}
+			msg := strings.ToLower(err.Error())
+			if !strings.Contains(msg, "indent") {
+				t.Fatalf("error = %q, want mention of indent", err)
+			}
+		})
+	}
+}
+
+func TestFamilyLocalBindingRejected(t *testing.T) {
+	_, err := ParseFile(`roots[0..3 as i]:
+  a: i`)
+	if err == nil {
+		t.Fatal("expected parse error for family-local binding")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "member record") {
+		t.Fatalf("error = %q, want mention of member record", err)
+	}
+	if !strings.Contains(msg, "top-level") {
+		t.Fatalf("error = %q, want guidance to use top-level globals", err)
+	}
+}
+
+func TestMultilineFieldExpressionInFamilyMember(t *testing.T) {
+	rt := compileScene(t, `scene family_multiline
+
+roots[0..2 as i]:
+  dot p:
+    at: [
+      i,
+      i + 1
+    ]
+`)
+
+	for _, key := range []int{0, 1} {
+		p := oneEntity(t, rt, familyMemberName("roots", key, "p"))
+		if got := p.fvec("at"); got != (Vec{float64(key), float64(key + 1), 0}) {
+			t.Fatalf("roots[%d].p.at = %v, want [%d %d 0]", key, got, key, key+1)
+		}
+	}
+}
+
+func TestFamilyHeaderNestedListDomain(t *testing.T) {
+	stmts, err := ParseFile(`roots[[0, 1, 2] as i]:
+  dot p:
+    at: [i, 0]
+`)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	var fam *FamilyStmt
+	for _, s := range stmts {
+		if f, ok := s.(FamilyStmt); ok {
+			fam = &f
+			break
+		}
+	}
+	if fam == nil {
+		t.Fatal("expected FamilyStmt")
+	}
+	if fam.Name != "roots" || fam.BindVar != "i" {
+		t.Fatalf("family = %+v, want roots[..] as i", fam)
+	}
+	if _, ok := fam.DomainE.(ListE); !ok {
+		t.Fatalf("domain = %T, want ListE", fam.DomainE)
+	}
+
+	rt, err := Compile(stmts)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if got := rt.Families["roots"].N; got != 3 {
+		t.Fatalf("family size = %d, want 3", got)
+	}
+}
+
+func TestFamilyHeaderDomainWithParens(t *testing.T) {
+	_, err := ParseFile(`roots[(0..3) as i]:
+  dot p:
+    at: [i, 0]
+`)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+}
+
+func TestMalformedFamilyHeaderNoPanic(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{name: "missing close bracket", src: "roots[0..n as i"},
+		{name: "missing as keyword", src: "roots[0..n i]:"},
+		{name: "bad domain expr", src: "roots[[0.. as i]:"},
+		{name: "incomplete header", src: "not_a_family[broken"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseFile(tc.src)
+			if err == nil {
+				t.Fatal("expected parse error")
+			}
+		})
+	}
+}
+
+func TestLuxeHeartExample(t *testing.T) {
+	path := filepath.Join("..", "..", "examples", "heart", "run.pdtt")
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	rt := compileScene(t, string(src))
+	fam := rt.Families["heart_outer"]
+	if fam == nil {
+		t.Fatal("heart_outer family was not registered")
+	}
+	if fam.N != 72 {
+		t.Fatalf("heart_outer.N = %d, want 72", fam.N)
 	}
 }

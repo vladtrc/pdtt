@@ -39,6 +39,25 @@ roots[2..n as i]:
 	}
 }
 
+func TestFrozenCaptureDomainBinderCreatesFamily(t *testing.T) {
+	rt := compileScene(t, `scene frozen_capture_domain
+
+n = 5
+
+roots[0..n as i]:
+  dot mark:
+    at: [i, 0]
+`)
+
+	fam := rt.Families["roots"]
+	if fam == nil {
+		t.Fatal("roots family was not registered")
+	}
+	if fam.N != 5 {
+		t.Fatalf("family size = %d, want 5", fam.N)
+	}
+}
+
 func TestDomainBinderListTweenUpdatesLiveMembers(t *testing.T) {
 	rt := compileScene(t, `scene live_family
 

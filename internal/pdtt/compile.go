@@ -565,6 +565,9 @@ func (rt *Runtime) addCapture(v CaptureStmt, t float64) error {
 		return nil
 	}
 	expr := v.E
+	if val, err := (&Scope{rt: rt}).Eval(expr); err == nil {
+		g.Val = snapshotValue(val)
+	}
 	rt.Events = append(rt.Events, &Event{T: t, Line: v.Line, Run: func(rt *Runtime) error {
 		s := &Scope{rt: rt}
 		val, err := s.Eval(expr)

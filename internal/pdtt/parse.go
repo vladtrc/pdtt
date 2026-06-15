@@ -101,11 +101,9 @@ type BlockStmt struct {
 }
 
 var (
-	recordRe     = regexp.MustCompile(`^(\w+) (\w+):$`)
-	ctorRecordRe = regexp.MustCompile(`^(\w+)\((.*)\)\s+(\w+):$`)
-	captureRe    = regexp.MustCompile(`^(\w+)\s*=\s*(.+)$`)
+	recordRe  = regexp.MustCompile(`^(\w+) (\w+):$`)
+	captureRe = regexp.MustCompile(`^(\w+)\s*=\s*(.+)$`)
 	colonBindRe  = regexp.MustCompile(`^(\w+)\s*:\s*(.+)$`)        // name: expr  (top-level colon binding)
-	familyRe     = regexp.MustCompile(`^(\w+)\[(.+) as (\w+)\]:$`) // NAME[domain as i]:
 	durRe        = regexp.MustCompile(`^(\d*\.?\d+)(s|%)?$`)
 	winRe        = regexp.MustCompile(`^(\d*\.?\d+(?:%|s)?)?-(\d*\.?\d+(?:%|s)?)?$`)
 	foldRe       = regexp.MustCompile(`^scan\((.+) by (\w+)\)$`)
@@ -142,37 +140,208 @@ func parseDurToken(tok string) (float64, bool, error) {
 	}
 }
 
-func stripComment(s string) string {
+// parseCtorRecordHeader parses constructor-style record headers such as
+// text("a) b") label: using balanced parentheses inside the argument list.
+func parseCtorRecordHeader(trimmed string) (typ, argText, name string, ok bool) {
+	i := strings.IndexByte(trimmed, '(')
+	if i <= 0 {
+		return "", "", "", false
+	}
+	typ = trimmed[:i]
+	if typ != "text" && typ != "typst" {
+		return "", "", "", false
+	}
+	close, found := balancedClosingParen(trimmed, i)
+	if !found {
+		return "", "", "", false
+	}
+	argText = strings.TrimSpace(trimmed[i+1 : close])
+	rest := strings.TrimSpace(trimmed[close+1:])
+	if !strings.HasSuffix(rest, ":") {
+		return "", "", "", false
+	}
+	name = strings.TrimSpace(strings.TrimSuffix(rest, ":"))
+	if name == "" || strings.ContainsAny(name, " \t(") {
+		return "", "", "", false
+	}
+	return typ, argText, name, true
+}
+
+// parseFamilyHeaderShape parses NAME[domainExpr as bindVar]: using
+// bracket-balanced scanning so domain expressions may contain nested
+// brackets, parentheses, or string literals safely.
+func parseFamilyHeaderShape(trimmed string) (name, domainText, bindVar string, ok bool) {
+	if !strings.HasSuffix(trimmed, ":") {
+		return "", "", "", false
+	}
+	withoutColon := strings.TrimSpace(strings.TrimSuffix(trimmed, ":"))
+	open := strings.IndexByte(withoutColon, '[')
+	if open <= 0 {
+		return "", "", "", false
+	}
+	name = strings.TrimSpace(withoutColon[:open])
+	if name == "" || strings.ContainsAny(name, " \t") {
+		return "", "", "", false
+	}
+	close, found := balancedClosingDelimiter(withoutColon, open, '[', ']')
+	if !found || close != len(withoutColon)-1 {
+		return "", "", "", false
+	}
+	domainText, bindVar, ok = splitDomainBindAtDepth0(withoutColon[open+1 : close])
+	if !ok {
+		return "", "", "", false
+	}
+	return name, domainText, bindVar, true
+}
+
+func splitDomainBindAtDepth0(inner string) (domain, bind string, ok bool) {
+	inner = strings.TrimSpace(inner)
+	if inner == "" {
+		return "", "", false
+	}
+	depth := 0
 	inStr := false
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
+	esc := false
+	lastAS := -1
+	for i := 0; i < len(inner); i++ {
+		c := inner[i]
+		if inStr {
+			if esc {
+				esc = false
+				continue
+			}
+			if c == '\\' {
+				esc = true
+				continue
+			}
+			if c == '"' {
+				inStr = false
+			}
+			continue
+		}
+		switch c {
 		case '"':
-			inStr = !inStr
-		case '#':
-			if !inStr {
-				return s[:i]
+			inStr = true
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		default:
+			if depth == 0 && i+4 <= len(inner) && inner[i:i+4] == " as " {
+				lastAS = i
+				i += 3
 			}
 		}
 	}
-	return s
+	if lastAS < 0 {
+		return "", "", false
+	}
+	domain = strings.TrimSpace(inner[:lastAS])
+	bind = strings.TrimSpace(inner[lastAS+4:])
+	if domain == "" || bind == "" || strings.ContainsAny(bind, " \t") {
+		return "", "", false
+	}
+	return domain, bind, true
 }
 
-// indentDepth returns the number of leading spaces/tabs of a raw line
-// (treating each tab as 1 unit). We only need to distinguish 0 / 1 / 2.
-func indentDepth(raw string) int {
-	n := 0
-	for _, c := range raw {
-		if c == ' ' || c == '\t' {
-			n++
-		} else {
-			break
+func balancedClosingDelimiter(s string, open int, openCh, closeCh byte) (close int, ok bool) {
+	if open < 0 || open >= len(s) || s[open] != openCh {
+		return 0, false
+	}
+	depth := 0
+	inStr := false
+	esc := false
+	for i := open; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			if esc {
+				esc = false
+				continue
+			}
+			if c == '\\' {
+				esc = true
+				continue
+			}
+			if c == '"' {
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case openCh:
+			depth++
+		case closeCh:
+			depth--
+			if depth == 0 {
+				return i, true
+			}
 		}
 	}
-	return n
+	return 0, false
+}
+
+func balancedClosingParen(s string, open int) (close int, ok bool) {
+	return balancedClosingDelimiter(s, open, '(', ')')
+}
+
+func parseCtorRecord(trimmed string, ln int) (*RecordStmt, error) {
+	typ, argText, name, ok := parseCtorRecordHeader(trimmed)
+	if !ok {
+		return nil, nil
+	}
+	e, err := ParseExpr(argText)
+	if err != nil {
+		return nil, fmt.Errorf("line %d: %v", ln, err)
+	}
+	return &RecordStmt{
+		Type: typ,
+		Name: name,
+		Fields: []FieldDef{{
+			Name: "text",
+			E:    e,
+			Line: ln,
+		}},
+		Line: ln,
+	}, nil
+}
+
+// looksLikeFlatFieldLine reports whether a column-0 line resembles a record
+// field (`name: expr`, optionally prefixed with rate/set) rather than another
+// top-level form such as a record header or family binder.
+func looksLikeFlatFieldLine(trimmed string) bool {
+	s := trimmed
+	if strings.HasPrefix(s, "rate ") {
+		s = strings.TrimSpace(s[5:])
+	} else if strings.HasPrefix(s, "set ") {
+		s = strings.TrimSpace(s[4:])
+	}
+	if recordRe.MatchString(s) {
+		return false
+	}
+	if _, _, _, ok := parseFamilyHeaderShape(s); ok {
+		return false
+	}
+	if _, _, _, ok := parseCtorRecordHeader(s); ok {
+		return false
+	}
+	return colonBindRe.MatchString(s)
+}
+
+func familyMemberHeaderError(ln int, trimmed string) error {
+	return fmt.Errorf(
+		"line %d: expected member record header inside family block (family blocks may only contain member records like `type name:`; move helpers to top-level globals), got %q",
+		ln, trimmed,
+	)
 }
 
 func ParseFile(src string) ([]Stmt, error) {
-	rawLines := strings.Split(src, "\n")
+	sc, err := ScanSource(src)
+	if err != nil {
+		return nil, err
+	}
+	lines := sc.Lines()
 	var stmts []Stmt
 	var curRecord *RecordStmt
 	var curBlock *BlockStmt
@@ -204,9 +373,9 @@ func ParseFile(src string) ([]Stmt, error) {
 		}
 	}
 
-	for n, raw := range rawLines {
-		ln := n + 1
-		line := strings.TrimRight(stripComment(raw), " \t")
+	for _, ll := range lines {
+		ln := ll.Line
+		line := ll.Text
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			flushRecord()
@@ -217,7 +386,7 @@ func ParseFile(src string) ([]Stmt, error) {
 			}
 			continue
 		}
-		depth := indentDepth(line)
+		depth := ll.Indent
 		indented := depth > 0
 
 		// Inside a family: "shallow" indent = member header, "deeper" indent = member field
@@ -232,57 +401,27 @@ func ParseFile(src string) ([]Stmt, error) {
 				curFamily.baseIndent = depth
 				// This line is a member header
 				flushFamilyMember()
-				if m := ctorRecordRe.FindStringSubmatch(trimmed); m != nil {
-					typ := m[1]
-					if typ != "text" && typ != "typst" {
-						return nil, fmt.Errorf("line %d: constructor-style records are only supported for text(...) and typst(...)", ln)
-					}
-					e, err := ParseExpr(m[2])
-					if err != nil {
-						return nil, fmt.Errorf("line %d: %v", ln, err)
-					}
-					curFamilyMember = &RecordStmt{
-						Type: typ,
-						Name: m[3],
-						Fields: []FieldDef{{
-							Name: "text",
-							E:    e,
-							Line: ln,
-						}},
-						Line: ln,
-					}
+				if rec, err := parseCtorRecord(trimmed, ln); err != nil {
+					return nil, err
+				} else if rec != nil {
+					curFamilyMember = rec
 				} else if m := recordRe.FindStringSubmatch(trimmed); m != nil {
 					curFamilyMember = &RecordStmt{Type: m[1], Name: m[2], Line: ln}
 				} else {
-					return nil, fmt.Errorf("line %d: expected member record header inside family block, got %q", ln, trimmed)
+					return nil, familyMemberHeaderError(ln, trimmed)
 				}
 				continue
 			} else if depth == curFamily.baseIndent {
 				// Same level as member headers: a new member header
 				flushFamilyMember()
-				if m := ctorRecordRe.FindStringSubmatch(trimmed); m != nil {
-					typ := m[1]
-					if typ != "text" && typ != "typst" {
-						return nil, fmt.Errorf("line %d: constructor-style records are only supported for text(...) and typst(...)", ln)
-					}
-					e, err := ParseExpr(m[2])
-					if err != nil {
-						return nil, fmt.Errorf("line %d: %v", ln, err)
-					}
-					curFamilyMember = &RecordStmt{
-						Type: typ,
-						Name: m[3],
-						Fields: []FieldDef{{
-							Name: "text",
-							E:    e,
-							Line: ln,
-						}},
-						Line: ln,
-					}
+				if rec, err := parseCtorRecord(trimmed, ln); err != nil {
+					return nil, err
+				} else if rec != nil {
+					curFamilyMember = rec
 				} else if m := recordRe.FindStringSubmatch(trimmed); m != nil {
 					curFamilyMember = &RecordStmt{Type: m[1], Name: m[2], Line: ln}
 				} else {
-					return nil, fmt.Errorf("line %d: expected member record header inside family block, got %q", ln, trimmed)
+					return nil, familyMemberHeaderError(ln, trimmed)
 				}
 				continue
 			} else {
@@ -333,6 +472,13 @@ func ParseFile(src string) ([]Stmt, error) {
 			continue
 		}
 
+		if curRecord != nil && looksLikeFlatFieldLine(trimmed) {
+			return nil, fmt.Errorf(
+				"line %d: record field %q must be indented under the record header (use an indented field line, not column-0 `name: expr`)",
+				ln, trimmed,
+			)
+		}
+
 		flushRecord()
 		flushBlock()
 
@@ -348,38 +494,23 @@ func ParseFile(src string) ([]Stmt, error) {
 			stmts = append(stmts, ExternStmt{Name: name})
 		default:
 			// family binder: NAME[domain as i]:
-			if m := familyRe.FindStringSubmatch(trimmed); m != nil {
-				domainE, err := ParseExpr(m[2])
+			if name, domainText, bindVar, ok := parseFamilyHeaderShape(trimmed); ok {
+				domainE, err := ParseExpr(domainText)
 				if err != nil {
 					return nil, fmt.Errorf("line %d: family domain: %v", ln, err)
 				}
 				curFamily = &FamilyStmt{
-					Name:    m[1],
+					Name:    name,
 					DomainE: domainE,
-					BindVar: m[3],
+					BindVar: bindVar,
 					Line:    ln,
 				}
 				continue
 			}
-			if m := ctorRecordRe.FindStringSubmatch(trimmed); m != nil {
-				typ := m[1]
-				if typ != "text" && typ != "typst" {
-					return nil, fmt.Errorf("line %d: constructor-style records are only supported for text(...) and typst(...)", ln)
-				}
-				e, err := ParseExpr(m[2])
-				if err != nil {
-					return nil, fmt.Errorf("line %d: %v", ln, err)
-				}
-				curRecord = &RecordStmt{
-					Type: typ,
-					Name: m[3],
-					Fields: []FieldDef{{
-						Name: "text",
-						E:    e,
-						Line: ln,
-					}},
-					Line: ln,
-				}
+			if rec, err := parseCtorRecord(trimmed, ln); err != nil {
+				return nil, err
+			} else if rec != nil {
+				curRecord = rec
 				continue
 			}
 			if m := recordRe.FindStringSubmatch(trimmed); m != nil {

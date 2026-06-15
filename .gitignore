@@ -4,3 +4,4 @@ frames/
 examples/*/res*/
 examples/*/ref/
 __pycache__/
+humantxt/
