@@ -22,7 +22,6 @@ func (m svgMatrix) apply(p Vec) Vec {
 	return Vec{
 		m.a*p[0] + m.c*p[1] + m.e,
 		m.b*p[0] + m.d*p[1] + m.f,
-		p[2],
 	}
 }
 
@@ -122,7 +121,7 @@ func parseTypstSVG(src string) ([][]Vec, Box, error) {
 			}
 			placed := make([]Vec, len(contour))
 			for i, p := range contour {
-				q := Vec{p[0] + u.x, p[1] + u.y, 0}
+				q := Vec{p[0] + u.x, p[1] + u.y}
 				q = u.matrix.apply(q)
 				placed[i] = q
 				bbox.Include(q)
@@ -241,7 +240,7 @@ func parseSVGPathContours(d string) ([][]Vec, error) {
 				if err != nil {
 					return nil, err
 				}
-				p := Vec{x, y, 0}
+				p := Vec{x, y}
 				if cmd == 'm' {
 					p = cur.Add(p)
 				}
@@ -266,7 +265,7 @@ func parseSVGPathContours(d string) ([][]Vec, error) {
 				if err != nil {
 					return nil, err
 				}
-				p := Vec{x, y, 0}
+				p := Vec{x, y}
 				if cmd == 'l' {
 					p = cur.Add(p)
 				}
@@ -282,7 +281,7 @@ func parseSVGPathContours(d string) ([][]Vec, error) {
 				if cmd == 'h' {
 					x += cur[0]
 				}
-				cur = Vec{x, cur[1], 0}
+				cur = Vec{x, cur[1]}
 				curPoly = append(curPoly, cur)
 			}
 		case 'V', 'v':
@@ -294,7 +293,7 @@ func parseSVGPathContours(d string) ([][]Vec, error) {
 				if cmd == 'v' {
 					y += cur[1]
 				}
-				cur = Vec{cur[0], y, 0}
+				cur = Vec{cur[0], y}
 				curPoly = append(curPoly, cur)
 			}
 		case 'C', 'c':
@@ -305,9 +304,9 @@ func parseSVGPathContours(d string) ([][]Vec, error) {
 				y2, _ := nextNum()
 				x3, _ := nextNum()
 				y3, _ := nextNum()
-				c1 := Vec{x1, y1, 0}
-				c2 := Vec{x2, y2, 0}
-				p3 := Vec{x3, y3, 0}
+				c1 := Vec{x1, y1}
+				c2 := Vec{x2, y2}
+				p3 := Vec{x3, y3}
 				if cmd == 'c' {
 					c1 = cur.Add(c1)
 					c2 = cur.Add(c2)
@@ -323,8 +322,8 @@ func parseSVGPathContours(d string) ([][]Vec, error) {
 				y1, _ := nextNum()
 				x2, _ := nextNum()
 				y2, _ := nextNum()
-				c1 := Vec{x1, y1, 0}
-				p2 := Vec{x2, y2, 0}
+				c1 := Vec{x1, y1}
+				p2 := Vec{x2, y2}
 				if cmd == 'q' {
 					c1 = cur.Add(c1)
 					p2 = cur.Add(p2)
@@ -354,7 +353,7 @@ func flattenCubic(p0, p1, p2, p3 Vec, steps int) []Vec {
 		mt := 1 - t
 		x := mt*mt*mt*p0[0] + 3*mt*mt*t*p1[0] + 3*mt*t*t*p2[0] + t*t*t*p3[0]
 		y := mt*mt*mt*p0[1] + 3*mt*mt*t*p1[1] + 3*mt*t*t*p2[1] + t*t*t*p3[1]
-		out = append(out, Vec{x, y, 0})
+		out = append(out, Vec{x, y})
 	}
 	return out
 }
@@ -369,7 +368,7 @@ func flattenQuadratic(p0, p1, p2 Vec, steps int) []Vec {
 		mt := 1 - t
 		x := mt*mt*p0[0] + 2*mt*t*p1[0] + t*t*p2[0]
 		y := mt*mt*p0[1] + 2*mt*t*p1[1] + t*t*p2[1]
-		out = append(out, Vec{x, y, 0})
+		out = append(out, Vec{x, y})
 	}
 	return out
 }

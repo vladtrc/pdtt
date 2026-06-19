@@ -181,6 +181,14 @@ dot point:
   color: color.red
 ```
 
+`axes`/`plane` keep two independent scales. `size: [w, h]` is the physical
+footprint in world units (default `[10, 6]`); `x_range`/`y_range` are the data
+window mapped into that footprint. Animate `size` to grow or shrink the whole
+graph; animate the ranges to zoom the data without moving the footprint. Both
+are plain live fields, so a tween on either rescales every `plot` and every
+`ax.point(...)` that reads the axes. `frame: 1` outlines the footprint so its
+scene size stays visible while the data window zooms underneath it.
+
 Text:
 
 ```pdtt
@@ -415,6 +423,7 @@ Supported expression forms:
 - ranges: `0..n`
 - multiline lists/parentheses while brackets are balanced
 - arithmetic: `+`, `-`, `*`, `/`, `%`
+- interpolation: `mix(from, to, amount)` for numbers, vectors, colors, and compatible lists
 - comparisons: `==`, `!=`, `<`, `>`, `<=`, `>=`
 - ternary: `cond ? a : b`
 - legacy ternary: `a if cond else b`
@@ -430,7 +439,8 @@ truthiness in conditionals.
 Builtins and namespaces:
 
 - math: `math.pi`, `math.tau`, `math.e`
-- trig/math: `sin`, `cos`, `exp`, `sinh`, `cosh`, `abs`, `sqrt`
+- trig/math: `sin`, `cos`, `exp`, `log`, `pow(base, exp)`, `sinh`, `cosh`, `abs`, `sqrt`
+- reducers: `min(a, b, ...)` / `max(a, b, ...)` (also accept a single list)
 - lists: `range(n)`, `sum(list)`, `prod(list)`, `pair_sum(list)`
 - strings: `fmt(format, ...)`
 - layout: `center(obj)`, `below(obj, gap)`, `above(obj, gap)`, `right_of(obj, gap)`,

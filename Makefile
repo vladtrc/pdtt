@@ -42,8 +42,8 @@ fmt: format lint
 render-%: | build
 	$(BIN) -i examples/$*/run.pdtt -o examples/$*/res -fps $(FPS) -w $(W) -h $(H)
 
-# back-compat single-example entry points: `make render EXAMPLE=40-shape-morph`
-EXAMPLE ?= 40-shape-morph
+# back-compat single-example entry points: `make render EXAMPLE=shape-morph`
+EXAMPLE ?= shape-morph
 render: render-$(EXAMPLE)
 example: render
 

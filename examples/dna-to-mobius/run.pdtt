@@ -1,0 +1,288 @@
+scene dna_to_mobius
+
+n = 64
+turns: 3.25
+reveal: 0
+form: 0
+width: 0
+energy: 0
+palette: 0
+turn: 0
+outro: 0
+zoom: 7.8
+focus: [0, 0.02]
+cam_d: 14.0
+
+# This hidden record is the scene's flywheel. Rate fields never ease to zero at
+# block boundaries, so the object keeps breathing and rotating through every act.
+dot flywheel:
+  rate angle: 1.22
+  rate value: 0.34
+  rate side: 8.5
+
+phase: flywheel.angle
+live_yaw: -0.78 + flywheel.value
+live_pitch: 0.48 + 0.22 * sin(0.43 * phase) + 0.06 * sin(1.7 * phase)
+yaw: (1 - form) * live_yaw + form * -0.44
+pitch: (1 - form) * live_pitch + form * 0.58
+spin: math.tau * turn
+roll: 0.12 * math.tau * turn
+orbit: (1 - form) * 0.18 * phase
+pulse: 0.5 + 0.5 * sin(2.1 * phase)
+closeup: form * form * (3 - 2 * form)
+view_scale: 1 + 0.20 * closeup
+
+axis_len: 7.0 + form * (math.tau * 2.08 - 7.0)
+bend_r: axis_len / (math.tau * max(form, 0.001))
+strand_w: (1 - form) * 1.12 + form * 0.62
+
+frame frame:
+  at: focus
+  w: zoom
+
+base_colors: [color.green, color.red, color.blue, color.yellow]
+
+strand[0..n as i]:
+  u: i / n
+  next_i: (i + 1) % n
+  seg_on: i < n - 1 ? 1 : max(0, (form - 0.88) / 0.12)
+  rung_on: i % 2 == 0 ? 1 : 0
+  base_i: (i / 2) % 4
+  edge_u: i / (n - 1)
+  a_target: mix(color.cyan, color.magenta, edge_u)
+  b_target: mix(color.magenta, color.cyan, edge_u)
+  a_mid: mix(color.cyan, color.violet, form)
+  b_mid: mix(color.magenta, color.violet, form)
+  a_color: mix(a_mid, a_target, palette)
+  b_color: mix(b_mid, b_target, palette)
+  erase_front: outro * (n + 8)
+  remain: min(1, max(0, (i + 8 - erase_front) / 8))
+  unzip: min(1, remain * 1.8)
+
+  # A traveling reveal grows the molecule from one luminous tip.
+  front: reveal * (n + 8)
+  vis: min(1, max(0, front - i))
+  rung_vis: min(1, max(0, front - i - 2.5))
+  wave: max(0, 1 - abs(front - i) / 5)
+  base_presence: max(0, 1 - max(0, form - 0.12) / 0.68)
+
+  # The straight axis bends continuously into a circle. At form=1 the ends
+  # meet exactly; unlike a coordinate cross-fade, intermediate shapes stay legible.
+  phi: math.tau * form * (u - 0.5) + form * orbit
+  cx: form < 0.001 ? 0 : bend_r * (cos(phi) - cos(form * orbit))
+  cy: 0
+  cz: form < 0.001 ? axis_len * (u - 0.5) : bend_r * (sin(phi) - sin(form * orbit))
+
+  # Cross-section: many DNA turns unwind into the single half-turn that makes
+  # the final band non-orientable. A transient ripple adds character mid-change.
+  dna_angle: math.tau * turns * u + 1.35 * phase
+  mobius_angle: 0.5 * phi
+  ripple: 1.15 * sin(math.tau * u + 1.8 * phase) * form * (1 - form)
+  cross_angle: (1 - form) * dna_angle + form * mobius_angle + ripple
+
+  nx: cos(phi)
+  nz: sin(phi)
+  ox: strand_w * cos(cross_angle) * nx
+  oy: strand_w * sin(cross_angle)
+  oz: strand_w * cos(cross_angle) * nz
+
+  ax3: cx + width * ox
+  ay3: cy + width * oy
+  az3: cz + width * oz
+  bx3: cx - width * ox
+  by3: cy - width * oy
+  bz3: cz - width * oz
+
+  mx3: cx
+  my3: cy
+  mz3: cz
+
+  # As the ring closes, move the rotation pivot from the DNA origin to the
+  # geometric center of the Möbius ring. The final Y-axis turn then spins in
+  # place instead of orbiting around a point on the seam.
+  pivot_x: form < 0.001 ? 0 : -form * form * bend_r * cos(form * orbit)
+  pivot_z: form < 0.001 ? 0 : -form * form * bend_r * sin(form * orbit)
+
+  ax1: cos(yaw) * (ax3 - pivot_x) + sin(yaw) * (az3 - pivot_z)
+  az1: -sin(yaw) * (ax3 - pivot_x) + cos(yaw) * (az3 - pivot_z)
+  ay1: cos(pitch) * ay3 - sin(pitch) * az1
+  az2: sin(pitch) * ay3 + cos(pitch) * az1
+  ax2: cos(spin) * ax1 + sin(spin) * az2
+  az3p: -sin(spin) * ax1 + cos(spin) * az2
+  ax3p: cos(roll) * ax2 - sin(roll) * ay1
+  ay2: sin(roll) * ax2 + cos(roll) * ay1
+  sa: cam_d / (cam_d - az3p)
+
+  bx1: cos(yaw) * (bx3 - pivot_x) + sin(yaw) * (bz3 - pivot_z)
+  bz1: -sin(yaw) * (bx3 - pivot_x) + cos(yaw) * (bz3 - pivot_z)
+  by1: cos(pitch) * by3 - sin(pitch) * bz1
+  bz2: sin(pitch) * by3 + cos(pitch) * bz1
+  bx2: cos(spin) * bx1 + sin(spin) * bz2
+  bz3p: -sin(spin) * bx1 + cos(spin) * bz2
+  bx3p: cos(roll) * bx2 - sin(roll) * by1
+  by2: sin(roll) * bx2 + cos(roll) * by1
+  sb: cam_d / (cam_d - bz3p)
+
+  mx1: cos(yaw) * (mx3 - pivot_x) + sin(yaw) * (mz3 - pivot_z)
+  mz1: -sin(yaw) * (mx3 - pivot_x) + cos(yaw) * (mz3 - pivot_z)
+  my1: cos(pitch) * my3 - sin(pitch) * mz1
+  mz2: sin(pitch) * my3 + cos(pitch) * mz1
+  mx2: cos(spin) * mx1 + sin(spin) * mz2
+  mz3p: -sin(spin) * mx1 + cos(spin) * mz2
+  mx3p: cos(roll) * mx2 - sin(roll) * my1
+  my2: sin(roll) * mx2 + cos(roll) * my1
+  sm: cam_d / (cam_d - mz3p)
+
+  a_proj: [ax3p * sa * view_scale + 1.35 * closeup, ay2 * sa * view_scale + 1.35 * closeup]
+  b_proj: [bx3p * sb * view_scale + 1.35 * closeup, by2 * sb * view_scale + 1.35 * closeup]
+  m_at: [mx3p * sm * view_scale + 1.35 * closeup, my2 * sm * view_scale + 1.35 * closeup]
+  a_at: mix(m_at, a_proj, unzip)
+  b_at: mix(m_at, b_proj, unzip)
+
+  dot a:
+    at: a_at
+    radius: 0.030 + 0.022 * sa + 0.045 * wave
+    color: a_color
+    opacity: vis * remain * (0.45 + 0.42 * sa / 1.7)
+
+  dot b:
+    at: b_at
+    radius: 0.030 + 0.022 * sb + 0.045 * wave
+    color: b_color
+    opacity: vis * remain * (0.45 + 0.42 * sb / 1.7)
+
+  dot base:
+    at: m_at
+    radius: 0.034 + 0.026 * sm + 0.030 * wave
+    color: base_colors[base_i]
+    opacity: base_presence * rung_on * rung_vis * (0.48 + 0.34 * sm / 1.7)
+
+  path edge_a:
+    points: [a.at, i < n - 1 ? strand[next_i].a.at : strand[0].b.at]
+    stroke.color: a_color @ 86%
+    stroke.width: 0.035 + 0.030 * wave
+    opacity: vis * remain * seg_on * (0.34 + 0.46 * sa / 1.7)
+    draw: vis * remain * seg_on
+
+  path edge_b:
+    points: [b.at, i < n - 1 ? strand[next_i].b.at : strand[0].a.at]
+    stroke.color: b_color @ 86%
+    stroke.width: 0.035 + 0.030 * wave
+    opacity: vis * remain * seg_on * (0.34 + 0.46 * sb / 1.7)
+    draw: vis * remain * seg_on
+
+  path rung:
+    points: [a.at, b.at]
+    stroke.color: base_colors[base_i] @ 62%
+    stroke.width: 0.026 + 0.018 * wave
+    opacity: remain * rung_on * rung_vis * (0.24 + 0.34 * sm / 1.7)
+    draw: remain * rung_on * rung_vis
+
+# A comet runs along the same living geometry throughout the transformation.
+trail[0..18 as i]:
+  fade: 1 - i / 18
+  track: (flywheel.side - 0.42 * i + 40 * n) % (2 * n)
+  pick: track % n
+
+  dot p:
+    at: track < n ? strand[pick].a.at : strand[pick].b.at
+    radius: 0.018 + 0.048 * fade
+    color: color.yellow
+    opacity: energy * (1 - outro) * fade * 0.72
+
+erase_pick: min(n - 1, outro * (n + 8))
+spark_lock: min(1, outro * 5)
+erase_at: [
+  (strand[erase_pick].a.at.x + strand[erase_pick].b.at.x) / 2,
+  (strand[erase_pick].a.at.y + strand[erase_pick].b.at.y) / 2
+]
+
+dot bead_glow:
+  at: mix(trail[0].p.at, erase_at, spark_lock)
+  radius: 0.20 + 0.055 * pulse
+  color: color.gold
+  opacity: energy * (0.12 + 0.10 * pulse)
+
+dot bead:
+  at: mix(trail[0].p.at, erase_at, spark_lock)
+  radius: 0.075 + 0.025 * pulse
+  color: color.yellow
+  opacity: energy * 0.98
+
+# Sparse dust gives the camera motion a quiet visual reference.
+dust[0..28 as i]:
+  a: math.tau * i / 28 + 0.07 * phase
+  r: 3.15 + 0.18 * sin(1.7 * i + 0.28 * phase)
+
+  dot p:
+    at: [r * cos(a), 2.62 * sin(a)]
+    radius: 0.010 + 0.006 * (1 + sin(i + phase))
+    color: i % 3 == 0 ? color.magenta : color.teal
+    opacity: 0.035 + 0.045 * pulse
+
+text dna_title:
+  text: "DNA"
+  at: [-3.65, 2.90]
+  scale: 0.72
+  color: color.white @ 72%
+
+text mobius_title:
+  text: "MOBIUS"
+  at: [-3.65, -2.90]
+  scale: 0.68
+  color: color.white @ 72%
+
+# Activate the whole rig invisibly. The reveal field, not a stack of entry
+# tweens, now performs the visual construction.
+| 0.08s | linear
+| strand[* as i].edge_a{opacity: 0, draw: 0} -> strand[i].edge_a
+| strand[* as i].edge_b{opacity: 0, draw: 0} -> strand[i].edge_b
+| strand[* as i].rung{opacity: 0, draw: 0} -> strand[i].rung
+| strand[* as i].a{opacity: 0, scale: 0.2} -> strand[i].a
+| strand[* as i].b{opacity: 0, scale: 0.2} -> strand[i].b
+| strand[* as i].base{opacity: 0, scale: 0.2} -> strand[i].base
+| trail[* as i].p{opacity: 0} -> trail[i].p
+| bead{opacity: 0} -> bead
+| bead_glow{opacity: 0} -> bead_glow
+| dust[* as i].p{opacity: 0} -> dust[i].p
+| dna_title{opacity: 0} -> dna_title
+
+# A single pulse writes the double helix into space.
+| 2.55s | ease_out_cubic
+| width -> 1
+| reveal -> 1
+| .55- | energy -> 1
+| zoom -> 6.65
+
+# Let it rotate without stopping; only framing and emphasis breathe.
+| 2.15s | ease_in_out
+| zoom -> 5.95
+| dna_title.scale -> 0.82
+| energy -> 0.82
+
+# The axis curls into a ring while the many DNA turns unwind into one half-turn.
+# Continuous rate fields carry rotation straight through both ends of this block.
+| 4.2s | ease_in_out
+| form -> 1
+| zoom -> 8.20
+| focus -> [-0.25, -0.10]
+| energy -> 1
+| dna_title.opacity -> 0
+| .45- | mobius_title{opacity: 0, scale: 0.82} -> mobius_title
+
+# The finished ribbon makes one Y-axis turn with a slower simultaneous Z roll.
+# Its single-color construction resolves quickly into a continuous two-color edge.
+| 6.4s | linear
+| turn -> 1
+| ease_out | 0s-1.15s | palette -> 1
+| energy -> 0.45
+| mobius_title.scale -> 0.76
+| mobius_title.opacity -> 0.48
+
+# The ribbon unzips into its centerline under a traveling erase front. The
+# moving bead and its afterglow are the last elements left on screen.
+| 1.25s | ease_in_out
+| outro -> 1
+| turn -> 1.14
+| energy -> 0
+| mobius_title.opacity -> 0

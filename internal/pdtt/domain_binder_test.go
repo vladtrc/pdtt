@@ -240,7 +240,7 @@ axes ax:
 
 	grid := oneEntity(t, rt, "grid")
 	ax := oneEntity(t, rt, "ax")
-	for _, p := range []Vec{{-3, 0, 0}, {1, 0, 0}, {0, 2, 0}} {
+	for _, p := range []Vec{{-3, 0}, {1, 0}, {0, 2}} {
 		gridPoint := axesLocalPoint(grid, p[0], p[1]).Add(grid.fvec("at"))
 		axPoint := axesPoint(ax, p[0], p[1])
 		if gridPoint != axPoint {

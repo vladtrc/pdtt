@@ -4,6 +4,7 @@ package pdtt
 // camera is an ordinary record, spec §6). Entities draw in declaration order.
 
 import (
+	"fmt"
 	"math"
 
 	"github.com/fogleman/gg"
@@ -50,7 +51,6 @@ func rotateAround(p, center Vec, angle float64) Vec {
 	return Vec{
 		center[0] + dx*c - dy*s,
 		center[1] + dx*s + dy*c,
-		p[2],
 	}
 }
 
@@ -166,11 +166,11 @@ func outlinePoints(e *Entity, n int) []Vec {
 	pts := make([]Vec, n)
 	switch e.Type {
 	case "path":
-		pathPts := pathPoints(e, tf)
+		pathPts := pathWorldPoints(e)
 		if len(pathPts) < 2 {
 			return nil
 		}
-		if e.fnum("closed") != 0 {
+		if pathIsClosed(e) {
 			return resampleClosed(pathPts, n)
 		}
 		return resampleOpen(pathPts, n)
@@ -182,14 +182,14 @@ func outlinePoints(e *Entity, n int) []Vec {
 		r *= tf.Scale
 		for i := range pts {
 			theta := 2 * math.Pi * float64(i) / float64(n)
-			pts[i] = Vec{at[0] + r*math.Cos(theta), at[1] + r*math.Sin(theta), at[2]}
+			pts[i] = Vec{at[0] + r*math.Cos(theta), at[1] + r*math.Sin(theta)}
 		}
 	default:
 		w, h := entitySize(e)
 		r := math.Min(w, h) / 2
 		for i := range pts {
 			theta := 2 * math.Pi * float64(i) / float64(n)
-			pts[i] = Vec{at[0] + r*math.Cos(theta), at[1] + r*math.Sin(theta), at[2]}
+			pts[i] = Vec{at[0] + r*math.Cos(theta), at[1] + r*math.Sin(theta)}
 		}
 	}
 	return pts
@@ -242,7 +242,6 @@ func sampleContoursByLength(contours [][]Vec, n int) []Vec {
 		out[i] = Vec{
 			lerp(ed.a[0], ed.b[0], u),
 			lerp(ed.a[1], ed.b[1], u),
-			lerp(ed.a[2], ed.b[2], u),
 		}
 	}
 	return out
@@ -286,7 +285,7 @@ func resampleClosed(contour []Vec, n int) []Vec {
 		}
 		s := segs[idx]
 		u := (target - acc) / s.l
-		out[i] = Vec{lerp(s.a[0], s.b[0], u), lerp(s.a[1], s.b[1], u), lerp(s.a[2], s.b[2], u)}
+		out[i] = Vec{lerp(s.a[0], s.b[0], u), lerp(s.a[1], s.b[1], u)}
 	}
 	return out
 }
@@ -336,7 +335,7 @@ func resampleOpen(contour []Vec, n int) []Vec {
 		if s.l > 1e-12 {
 			u = (target - acc) / s.l
 		}
-		out[i] = Vec{lerp(s.a[0], s.b[0], u), lerp(s.a[1], s.b[1], u), lerp(s.a[2], s.b[2], u)}
+		out[i] = Vec{lerp(s.a[0], s.b[0], u), lerp(s.a[1], s.b[1], u)}
 	}
 	return out
 }
@@ -347,10 +346,10 @@ func contourCentroid(c []Vec) Vec {
 	}
 	var s Vec
 	for _, p := range c {
-		s = Vec{s[0] + p[0], s[1] + p[1], s[2] + p[2]}
+		s = Vec{s[0] + p[0], s[1] + p[1]}
 	}
 	nf := float64(len(c))
-	return Vec{s[0] / nf, s[1] / nf, s[2] / nf}
+	return Vec{s[0] / nf, s[1] / nf}
 }
 
 func contourSignedArea(c []Vec) float64 {
@@ -516,7 +515,7 @@ func (r *Renderer) drawText(dc *gg.Context, c cam, e *Entity, tf Transform) {
 						continue
 					}
 					for i, p := range contour {
-						wp := rotateAround(Vec{wx + p[0], wy + p[1], 0}, at, tf.Angle)
+						wp := rotateAround(Vec{wx + p[0], wy + p[1]}, at, tf.Angle)
 						x, y := c.sx(wp)
 						if i == 0 {
 							dc.MoveTo(x, y)
@@ -530,7 +529,7 @@ func (r *Renderer) drawText(dc *gg.Context, c cam, e *Entity, tf Transform) {
 				dc.SetFillRuleWinding()
 				continue
 			}
-			x, y := c.sx(Vec{wx, wy, 0})
+			x, y := c.sx(Vec{wx, wy})
 			dc.DrawString(text, x, y+0.35*emPx)
 		}
 	}
@@ -550,7 +549,7 @@ func gridPoint(rt *Runtime, e *Entity, p Vec) Vec {
 		return p
 	}
 	b := e.WarpBlend
-	return Vec{lerp(p[0], q[0], b), lerp(p[1], q[1], b), 0}
+	return Vec{lerp(p[0], q[0], b), lerp(p[1], q[1], b)}
 }
 
 func (r *Renderer) polyline(dc *gg.Context, c cam, pts []Vec) {
@@ -572,6 +571,7 @@ func (r *Renderer) drawPlane(dc *gg.Context, c cam, e *Entity, tf Transform) {
 	if draw <= 0 {
 		return
 	}
+	r.drawAxesFrame(dc, c, e, tf)
 	xr := rangeOf(e, "x_range", -7, 7)
 	yr := rangeOf(e, "y_range", -4, 4)
 	at := tf.At
@@ -587,43 +587,59 @@ func (r *Renderer) drawPlane(dc *gg.Context, c cam, e *Entity, tf Transform) {
 		var pts []Vec
 		for i := 0; i <= n; i++ {
 			t := float64(i) / n
-			p := Vec{lerp(p0[0], p1[0], t), lerp(p0[1], p1[1], t), 0}
+			p := Vec{lerp(p0[0], p1[0], t), lerp(p0[1], p1[1], t)}
 			p = gridPoint(rt, e, p)
 			pts = append(pts, axesLocalPoint(e, p[0], p[1]).Add(at))
 		}
 		return pts
 	}
-	step := xr[2]
-	if step <= 0 {
-		step = 1
-	}
+	step := niceStep(xr[2])
 	dc.SetLineWidth(math.Max(1, 0.018*c.ppu))
 	for x := xr[0]; x <= xr[1]+1e-9; x += step {
 		if math.Abs(x) < 1e-9 {
 			continue
 		}
 		setColor(dc, lineCol, 0.55*op)
-		r.polyline(dc, c, sampleLine(Vec{x, yr[0], 0}, Vec{x, yr[1], 0}))
+		r.polyline(dc, c, sampleLine(Vec{x, yr[0]}, Vec{x, yr[1]}))
 	}
-	step = yr[2]
-	if step <= 0 {
-		step = 1
-	}
+	step = niceStep(yr[2])
 	for y := yr[0]; y <= yr[1]+1e-9; y += step {
 		if math.Abs(y) < 1e-9 {
 			continue
 		}
 		setColor(dc, lineCol, 0.55*op)
-		r.polyline(dc, c, sampleLine(Vec{xr[0], y, 0}, Vec{xr[1], y, 0}))
+		r.polyline(dc, c, sampleLine(Vec{xr[0], y}, Vec{xr[1], y}))
 	}
 	dc.SetLineWidth(math.Max(1.5, 0.03*c.ppu))
 	setColor(dc, axisCol, 0.9*op)
-	r.polyline(dc, c, sampleLine(Vec{0, yr[0], 0}, Vec{0, yr[1], 0}))
-	r.polyline(dc, c, sampleLine(Vec{xr[0], 0, 0}, Vec{xr[1], 0, 0}))
+	r.polyline(dc, c, sampleLine(Vec{0, yr[0]}, Vec{0, yr[1]}))
+	r.polyline(dc, c, sampleLine(Vec{xr[0]}, Vec{xr[1]}))
+}
+
+// drawAxesFrame outlines the world-space footprint of an axes/plane when its
+// `frame` field is set. It makes the graph's scene size visible and distinct
+// from its data scale — animating `size` visibly grows this box.
+func (r *Renderer) drawAxesFrame(dc *gg.Context, c cam, e *Entity, tf Transform) {
+	if e.fnum("frame") <= 0 {
+		return
+	}
+	w, h := axesSize(e)
+	at := tf.At
+	box := []Vec{
+		{at[0] - w/2, at[1] - h/2},
+		{at[0] + w/2, at[1] - h/2},
+		{at[0] + w/2, at[1] + h/2},
+		{at[0] - w/2, at[1] + h/2},
+		{at[0] - w/2, at[1] - h/2},
+	}
+	dc.SetLineWidth(math.Max(1, 0.02*c.ppu))
+	setColor(dc, namedColors["white"], 0.22*tf.Opacity)
+	r.polyline(dc, c, box)
 }
 
 func (r *Renderer) drawAxes(dc *gg.Context, c cam, e *Entity, tf Transform) {
 	op := tf.Opacity
+	r.drawAxesFrame(dc, c, e, tf)
 	xr := rangeOf(e, "x_range", -7, 7)
 	yr := rangeOf(e, "y_range", -4, 4)
 	col := namedColors["white"]
@@ -633,26 +649,149 @@ func (r *Renderer) drawAxes(dc *gg.Context, c cam, e *Entity, tf Transform) {
 	p0 := axesPoint(e, xr[0], 0)
 	p1 := axesPoint(e, xr[1], 0)
 	r.polyline(dc, c, []Vec{p0, p1})
-	r.arrowHead(dc, c, p1, Vec{1, 0, 0}, op, col)
+	r.arrowHead(dc, c, p1, Vec{1}, op, col)
 	q0 := axesPoint(e, 0, yr[0])
 	q1 := axesPoint(e, 0, yr[1])
 	r.polyline(dc, c, []Vec{q0, q1})
-	r.arrowHead(dc, c, q1, Vec{0, 1, 0}, op, col)
+	r.arrowHead(dc, c, q1, Vec{0, 1}, op, col)
 
 	tick := 0.09
-	for x := xr[0]; x <= xr[1]+1e-9; x += xr[2] {
+	xTicks := axisTickValues(xr[0], xr[1], xr[2])
+	for _, x := range xTicks {
 		if math.Abs(x) < 1e-9 {
 			continue
 		}
 		p := axesPoint(e, x, 0)
-		r.polyline(dc, c, []Vec{{p[0], p[1] - tick, 0}, {p[0], p[1] + tick, 0}})
+		r.polyline(dc, c, []Vec{{p[0], p[1] - tick}, {p[0], p[1] + tick}})
 	}
-	for y := yr[0]; y <= yr[1]+1e-9; y += yr[2] {
+	yTicks := axisTickValues(yr[0], yr[1], yr[2])
+	for _, y := range yTicks {
 		if math.Abs(y) < 1e-9 {
 			continue
 		}
 		p := axesPoint(e, 0, y)
-		r.polyline(dc, c, []Vec{{p[0] - tick, p[1], 0}, {p[0] + tick, p[1], 0}})
+		r.polyline(dc, c, []Vec{{p[0] - tick, p[1]}, {p[0] + tick, p[1]}})
+	}
+	r.drawAxisTickLabels(dc, c, e, xTicks, yTicks, tick, op)
+}
+
+func axisTickValues(lo, hi, step float64) []float64 {
+	step = niceStep(step)
+	start := math.Ceil((lo+1e-9)/step) * step
+	if math.Abs(lo) < 1e-9 {
+		start = step
+	}
+	var out []float64
+	for v := start; v <= hi+1e-9; v += step {
+		out = append(out, snapAxisTick(v, step))
+	}
+	return out
+}
+
+// niceStep snaps an arbitrary step to the nearest "nice" value of the form
+// 1/2/5 × 10^k. Static authored steps (0.5, 1, 2) are already nice and pass
+// through unchanged; the point is to round the ugly fractional steps that fall
+// out of animating a range (e.g. 88.9 → 100) so tick labels stay legible.
+func niceStep(step float64) float64 {
+	if step <= 0 {
+		return 1
+	}
+	mag := math.Pow(10, math.Floor(math.Log10(step)))
+	norm := step / mag
+	switch {
+	case norm < 1.5:
+		return mag
+	case norm < 3.5:
+		return 2 * mag
+	case norm < 7.5:
+		return 5 * mag
+	default:
+		return 10 * mag
+	}
+}
+
+func snapAxisTick(v, step float64) float64 {
+	if step <= 0 {
+		step = 1
+	}
+	return math.Round(v/step) * step
+}
+
+func formatAxisTick(v, step float64) string {
+	step = niceStep(step)
+	v = snapAxisTick(v, step)
+	if math.Abs(v) < 1e-12 {
+		return "0"
+	}
+	abs := math.Abs(v)
+	// compact large magnitudes so labels stay short across order-of-magnitude
+	// zooms (14000 → "14k", 5e7 → "50M"); small ranges are unaffected.
+	switch {
+	case abs >= 1e9:
+		return compactTick(v, 1e9, "B")
+	case abs >= 1e6:
+		return compactTick(v, 1e6, "M")
+	case abs >= 1e3:
+		return compactTick(v, 1e3, "k")
+	}
+	dec := axisTickDecimals(step)
+	if dec == 0 {
+		return fmt.Sprintf("%.0f", v)
+	}
+	return fmt.Sprintf("%.*f", dec, v)
+}
+
+func compactTick(v, divisor float64, suffix string) string {
+	x := v / divisor
+	if math.Abs(x-math.Round(x)) < 0.05 {
+		return fmt.Sprintf("%.0f%s", math.Round(x), suffix)
+	}
+	return fmt.Sprintf("%.1f%s", x, suffix)
+}
+
+func axisTickDecimals(step float64) int {
+	if step <= 0 || math.Abs(step-math.Round(step)) < 1e-6 {
+		return 0
+	}
+	d := int(math.Ceil(-math.Log10(step)))
+	if d < 1 {
+		return 1
+	}
+	if d > 4 {
+		return 4
+	}
+	return d
+}
+
+func (r *Renderer) drawAxisTickLabels(dc *gg.Context, c cam, e *Entity, xTicks, yTicks []float64, tick, op float64) {
+	px := math.Max(14, 0.28*c.ppu)
+	dc.SetFontFace(faceAt(px))
+	col := namedColors["white"]
+	labelOp := 0.85 * op
+	xr := rangeOf(e, "x_range", -7, 7)
+	yr := rangeOf(e, "y_range", -4, 4)
+	tickPx := tick * c.ppu
+	// x labels sit just under the axis line (data y = 0), centered on each tick
+	for _, x := range xTicks {
+		if math.Abs(x) < 1e-9 {
+			continue
+		}
+		sx, sy := c.sx(axesPoint(e, x, 0))
+		s := formatAxisTick(x, xr[2])
+		w, h := dc.MeasureString(s)
+		setColor(dc, col, labelOp)
+		dc.DrawString(s, sx-w/2, sy+tickPx+h)
+	}
+	// y labels sit just left of the axis line (data x = 0), vertically centered
+	for _, y := range yTicks {
+		if math.Abs(y) < 1e-9 {
+			continue
+		}
+		sx, sy := c.sx(axesPoint(e, 0, y))
+		s := formatAxisTick(y, yr[2])
+		w, h := dc.MeasureString(s)
+		setColor(dc, col, labelOp)
+		dc.DrawString(s, sx-tickPx-w-6, sy+h*0.35)
 	}
 }
 
@@ -662,7 +801,7 @@ func (r *Renderer) arrowHead(dc *gg.Context, c cam, tip, dir Vec, op float64, co
 		return
 	}
 	d := dir.Mul(1 / n)
-	perp := Vec{-d[1], d[0], 0}
+	perp := Vec{-d[1], d[0]}
 	size := 0.22
 	b1 := tip.Sub(d.Mul(size)).Add(perp.Mul(size * 0.45))
 	b2 := tip.Sub(d.Mul(size)).Sub(perp.Mul(size * 0.45))
@@ -790,7 +929,6 @@ func trimPathPoints(pts []Vec, draw float64) []Vec {
 			out = append(out, Vec{
 				lerp(pts[i][0], pts[i+1][0], u),
 				lerp(pts[i][1], pts[i+1][1], u),
-				lerp(pts[i][2], pts[i+1][2], u),
 			})
 		}
 		break
@@ -825,8 +963,8 @@ func (r *Renderer) tracePath(dc *gg.Context, c cam, pts []Vec, closed bool) {
 func (r *Renderer) drawPath(dc *gg.Context, c cam, e *Entity, tf Transform) {
 	op := tf.Opacity
 	draw := clamp01(e.fnum("draw"))
-	closed := e.fnum("closed") != 0
-	pts := pathPoints(e, tf)
+	closed := pathIsClosed(e)
+	pts := pathWorldPoints(e)
 	if len(pts) < 2 || draw <= 0 {
 		return
 	}

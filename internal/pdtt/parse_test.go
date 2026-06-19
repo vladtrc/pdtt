@@ -149,6 +149,27 @@ func TestColorNamespaceIncludesExtendedPalette(t *testing.T) {
 	}
 }
 
+func TestMixInterpolatesColors(t *testing.T) {
+	stmts, err := ParseFile(`
+scene color_mix
+
+dot p:
+  color: mix(color.cyan, color.magenta, 0.5)
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := Compile(stmts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := oneEntity(t, rt, "p")
+	got := entityColor(p)
+	if got.R != 0.5 || got.G != 0.5 || got.B != 1 {
+		t.Fatalf("mixed color = %+v, want {0.5 0.5 1 1}", got)
+	}
+}
+
 func oneEntity(t *testing.T, rt *Runtime, name string) *Entity {
 	t.Helper()
 	grp := rt.Groups[name]
@@ -405,7 +426,7 @@ dot p:
   ]
 `)
 	p := oneEntity(t, rt, "p")
-	if got := p.fvec("at"); got != (Vec{3, 7, 0}) {
+	if got := p.fvec("at"); got != (Vec{3, 7}) {
 		t.Fatalf("p.at = %v, want [3 7 0]", got)
 	}
 }
@@ -538,7 +559,7 @@ roots[0..2 as i]:
 
 	for _, key := range []int{0, 1} {
 		p := oneEntity(t, rt, familyMemberName("roots", key, "p"))
-		if got := p.fvec("at"); got != (Vec{float64(key), float64(key + 1), 0}) {
+		if got := p.fvec("at"); got != (Vec{float64(key), float64(key + 1)}) {
 			t.Fatalf("roots[%d].p.at = %v, want [%d %d 0]", key, got, key, key+1)
 		}
 	}

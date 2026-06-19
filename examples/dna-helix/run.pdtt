@@ -1,0 +1,212 @@
+scene dna_helix
+
+n = 84
+turns: 3.2
+phase: 0
+beat: 0
+twist: 0
+travel: 0
+yaw: -0.62
+pitch: 0.58
+spread: 0
+zoom: 7.8
+cam_d: 8.4
+
+pulse: beat * (0.55 + 0.45 * sin(phase))
+helix_r: 1.28 * spread * (1 + 0.06 * pulse)
+rise: 0.38
+z_mid: -rise * turns * math.pi
+
+frame frame:
+  at: [0, 0.05]
+  w: zoom
+
+base_colors: [color.green, color.red, color.blue, color.yellow]
+
+strand[0..n as i]:
+  t: math.tau * turns * i / n + twist
+  next_i: (i + 1) % n
+  seg_on: i < n - 1 ? 1 : 0
+  rung_on: i % 2 == 0 ? 1 : 0
+  base_i: (i / 2) % 4
+
+  xa3: helix_r * cos(t)
+  ya3: helix_r * sin(t)
+  za3: rise * t + z_mid
+
+  xb3: helix_r * cos(t + math.pi)
+  yb3: helix_r * sin(t + math.pi)
+  zb3: rise * t + z_mid
+
+  xm3: 0.5 * (xa3 + xb3)
+  ym3: 0.5 * (ya3 + yb3)
+  zm3: 0.5 * (za3 + zb3)
+
+  xa1: cos(yaw) * xa3 + sin(yaw) * za3
+  za1: -sin(yaw) * xa3 + cos(yaw) * za3
+  ya1: cos(pitch) * ya3 - sin(pitch) * za1
+  za2: sin(pitch) * ya3 + cos(pitch) * za1
+  sa: cam_d / (cam_d - za2)
+
+  xb1: cos(yaw) * xb3 + sin(yaw) * zb3
+  zb1: -sin(yaw) * xb3 + cos(yaw) * zb3
+  yb1: cos(pitch) * yb3 - sin(pitch) * zb1
+  zb2: sin(pitch) * yb3 + cos(pitch) * zb1
+  sb: cam_d / (cam_d - zb2)
+
+  xm1: cos(yaw) * xm3 + sin(yaw) * zm3
+  zm1: -sin(yaw) * xm3 + cos(yaw) * zm3
+  ym1: cos(pitch) * ym3 - sin(pitch) * zm1
+  zm2: sin(pitch) * ym3 + cos(pitch) * zm1
+  sm: cam_d / (cam_d - zm2)
+
+  a_at: [xa1 * sa, ya1 * sa]
+  b_at: [xb1 * sb, yb1 * sb]
+  m_at: [xm1 * sm, ym1 * sm]
+
+  a_vis: 0.22 + 0.50 * sa / 1.7
+  b_vis: 0.22 + 0.50 * sb / 1.7
+
+  dot a:
+    at: a_at
+    radius: 0.040 + 0.030 * sa + 0.012 * pulse
+    color: color.cyan
+    opacity: a_vis
+
+  dot b:
+    at: b_at
+    radius: 0.040 + 0.030 * sb + 0.012 * pulse
+    color: color.magenta
+    opacity: b_vis
+
+  dot base:
+    at: m_at
+    radius: (0.052 + 0.034 * sm) * rung_on + 0.001 * (1 - rung_on)
+    color: base_colors[base_i]
+    opacity: rung_on * (0.42 + 0.38 * sm / 1.6 + 0.14 * pulse)
+
+  path edge_a:
+    points: [a.at, strand[next_i].a.at]
+    stroke.color: color.cyan @ 72%
+    stroke.end: arrow
+    opacity: seg_on * (0.16 + 0.36 * sa / 1.7)
+    draw: seg_on
+
+  path edge_b:
+    points: [b.at, strand[next_i].b.at]
+    stroke.color: color.magenta @ 72%
+    stroke.end: arrow
+    opacity: seg_on * (0.16 + 0.36 * sb / 1.7)
+    draw: seg_on
+
+  path rung:
+    points: [a.at, b.at]
+    stroke.color: color.gold @ 36%
+    stroke.end: arrow
+    opacity: rung_on * (0.10 + 0.22 * abs(cos(t + phase / 2)) + 0.16 * pulse)
+    draw: rung_on
+
+trail[0..16 as i]:
+  fade: 1 - i / 16
+  t: travel - 0.22 * i
+
+  x3: helix_r * cos(t)
+  y3: helix_r * sin(t)
+  z3: rise * t + z_mid
+
+  x1: cos(yaw) * x3 + sin(yaw) * z3
+  z1: -sin(yaw) * x3 + cos(yaw) * z3
+  y1: cos(pitch) * y3 - sin(pitch) * z1
+  z2: sin(pitch) * y3 + cos(pitch) * z1
+  s: cam_d / (cam_d - z2)
+
+  dot p:
+    at: [x1 * s, y1 * s]
+    radius: (0.034 + 0.048 * fade) * s / 1.45
+    color: color.yellow
+    opacity: fade * (0.16 + 0.68 * s / 1.8)
+
+dot bead:
+  at: trail[0].p.at
+  radius: 0.11 + 0.04 * pulse
+  color: color.yellow
+  opacity: 0.94
+
+dot bead_glow:
+  at: bead.at
+  radius: 0.20 + 0.07 * pulse
+  color: color.gold
+  opacity: 0.14 + 0.12 * pulse
+
+halo[0..20 as i]:
+  a: math.tau * i / 20 + 0.48 * phase
+  r: 3.05 + 0.12 * pulse
+
+  dot p:
+    at: [
+      r * cos(a),
+      2.55 * sin(a)
+    ]
+    radius: 0.016 + 0.014 * pulse
+    color: color.teal
+    opacity: 0.04 + 0.13 * pulse
+
+text title:
+  text: "DNA"
+  at: [-3.55, 2.85]
+  scale: 0.95
+  color: color.white @ 82%
+
+| 0.7s | smooth | stagger 0.011s
+| strand[* as i].base{opacity: 0, scale: 0.2} -> strand[i].base
+| halo[* as i].p{opacity: 0, scale: 0.2} -> halo[i].p
+| title{opacity: 0} -> title
+
+| 0.9s | smooth
+| spread -> 1
+| beat -> 1
+| zoom -> 7.0
+
+| 0.9s | smooth | stagger 0.009s
+| strand[* as i].a{opacity: 0, scale: 0.2} -> strand[i].a
+| strand[* as i].b{opacity: 0, scale: 0.2} -> strand[i].b
+
+| 1.0s | smooth | stagger 0.009s
+| strand[* as i].edge_a{draw: 0, opacity: 0} -> strand[i].edge_a
+| strand[* as i].edge_b{draw: 0, opacity: 0} -> strand[i].edge_b
+| strand[* as i].rung{draw: 0, opacity: 0} -> strand[i].rung
+| trail[* as i].p{opacity: 0, scale: 0.2} -> trail[i].p
+| bead{opacity: 0, scale: 0.2} -> bead
+| bead_glow{opacity: 0, scale: 0.2} -> bead_glow
+
+| 2.3s | smooth
+| zoom -> 6.2
+| yaw -> 0.42
+| pitch -> 0.82
+| twist -> 1.4 * math.pi
+| travel -> 1.2 * math.pi
+| phase -> 1.5 * math.pi
+| zoom -> 5.4
+| yaw -> 1.55
+| pitch -> 0.28
+| twist -> 2.8 * math.pi
+| travel -> 2.4 * math.pi
+| phase -> 2.9 * math.pi
+
+| 2.4s | smooth
+| zoom -> 5.0
+| yaw -> 2.68
+| pitch -> -0.10
+| twist -> 4.1 * math.pi
+| travel -> 3.6 * math.pi
+| phase -> 4.2 * math.pi
+
+| 2.5s | smooth
+| zoom -> 6.1
+| yaw -> 3.95
+| pitch -> 0.70
+| twist -> 5.4 * math.pi
+| travel -> 4.8 * math.pi
+| phase -> 5.5 * math.pi
+
+| 1.1s

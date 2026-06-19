@@ -12,11 +12,11 @@ import (
 
 // ---------- values ----------
 
-type Vec [3]float64
+type Vec [2]float64
 
-func (a Vec) Add(b Vec) Vec     { return Vec{a[0] + b[0], a[1] + b[1], a[2] + b[2]} }
-func (a Vec) Sub(b Vec) Vec     { return Vec{a[0] - b[0], a[1] - b[1], a[2] - b[2]} }
-func (a Vec) Mul(k float64) Vec { return Vec{a[0] * k, a[1] * k, a[2] * k} }
+func (a Vec) Add(b Vec) Vec     { return Vec{a[0] + b[0], a[1] + b[1]} }
+func (a Vec) Sub(b Vec) Vec     { return Vec{a[0] - b[0], a[1] - b[1]} }
+func (a Vec) Mul(k float64) Vec { return Vec{a[0] * k, a[1] * k} }
 
 type Color struct{ R, G, B, A float64 }
 
@@ -32,7 +32,7 @@ func resolveAnchored(e *Entity, v Value) Value {
 		return v
 	}
 	w, h := entitySize(e)
-	return Vec{ap.P[0] - ap.Dir[0]*w/2, ap.P[1] - ap.Dir[1]*h/2, 0}
+	return Vec{ap.P[0] - ap.Dir[0]*w/2, ap.P[1] - ap.Dir[1]*h/2}
 }
 
 // Snapshot is the value of `name = record` — frozen field values, paired by
@@ -88,6 +88,10 @@ type Entity struct {
 	Parts      []*PartState
 	rt         *Runtime
 	Active     bool // present on screen; declarations start inactive
+
+	// IsFamilyProxy marks synthetic layout entities in a family Group (one per
+	// broadcast instance). They never render; resolveTrail walks through them.
+	IsFamilyProxy bool
 
 	// animation state owned by verbs
 	Offset         Vec
@@ -212,6 +216,8 @@ type RecordFamily struct {
 	Keys     []int // domain keys in declaration order
 	KeyToPos map[int]int
 	Members  []string // member names in declaration order, e.g. ["mark", "hit", "factor", "n"]
+	// MemberAt maps domain key → member name → entity (avoids fmt+map lookup per attr).
+	MemberAt map[int]map[string]*Entity
 }
 
 // familyMemberName returns the entity/group name for member `mem` of instance `idx`
@@ -264,7 +270,7 @@ func asVec(v Value) (Vec, error) {
 		return x, nil
 	case []Value:
 		var out Vec
-		if len(x) > 3 {
+		if len(x) > 2 {
 			return out, fmt.Errorf("list too long for a point")
 		}
 		for i, it := range x {
@@ -279,7 +285,7 @@ func asVec(v Value) (Vec, error) {
 		return asVec(x.Val)
 	}
 	if f, err := asFloat(v); err == nil {
-		return Vec{f, f, f}, nil
+		return Vec{f, f}, nil
 	}
 	return Vec{}, fmt.Errorf("not a point: %T", v)
 }
@@ -338,7 +344,7 @@ func lerpValue(a, b Value, u float64) Value {
 		if err != nil {
 			return b
 		}
-		return Vec{lerp(av[0], bv[0], u), lerp(av[1], bv[1], u), lerp(av[2], bv[2], u)}
+		return Vec{lerp(av[0], bv[0], u), lerp(av[1], bv[1], u)}
 	case Color:
 		bv, err := asColor(b)
 		if err != nil {
@@ -402,9 +408,9 @@ var namedColors = map[string]Color{
 }
 
 var namedVecs = map[string]Vec{
-	"up": {0, 1, 0}, "down": {0, -1, 0}, "left": {-1, 0, 0}, "right": {1, 0, 0},
-	"ul": {-1, 1, 0}, "ur": {1, 1, 0}, "dl": {-1, -1, 0}, "dr": {1, -1, 0},
-	"center": {0, 0, 0},
+	"up": {0, 1}, "down": {0, -1}, "left": {-1, 0}, "right": {1, 0},
+	"ul": {-1, 1}, "ur": {1, 1}, "dl": {-1, -1}, "dr": {1, -1},
+	"center": {0, 0},
 }
 
 var namedNums = map[string]float64{
@@ -482,7 +488,15 @@ func (s *Scope) lookup(name string) (Value, error) {
 			if it.Cols != nil {
 				if c, ok := it.Cols[name]; ok {
 					if local, ok := c.(FamilyLocalBinding); ok {
-						return s.evalFamilyLocal(local)
+						if v, ok := s.rt.cachedLocalBind(it.Cols, name); ok {
+							return v, nil
+						}
+						val, err := s.evalFamilyLocal(local)
+						if err != nil {
+							return nil, err
+						}
+						s.rt.cacheLocalBind(it.Cols, name, val)
+						return val, nil
 					}
 					return c, nil
 				}
@@ -695,7 +709,7 @@ func indexValue(x Value, i int) (Value, error) {
 		return v[i], nil
 	case *Group:
 		// If this group is a family proxy group, return a FamilyInstance
-		if len(v.Items) > 0 && v.Items[0].Type == "__family_proxy__" && v.Items[0].rt != nil {
+		if len(v.Items) > 0 && v.Items[0].IsFamilyProxy && v.Items[0].rt != nil {
 			if fam, ok := v.Items[0].rt.Families[v.Name]; ok {
 				if _, ok := fam.KeyToPos[i]; !ok {
 					return nil, fmt.Errorf("family %s has no key %d", v.Name, i)
@@ -851,8 +865,6 @@ func (s *Scope) attr(x Value, name string) (Value, error) {
 			return v[0], nil
 		case "y":
 			return v[1], nil
-		case "z":
-			return v[2], nil
 		}
 		return nil, fmt.Errorf("point has no attribute %q", name)
 	case ItVal:
@@ -902,6 +914,13 @@ func (s *Scope) attr(x Value, name string) (Value, error) {
 		// nil.name: fall through to namespace check in AttrE eval (handled in Eval)
 		return nil, nil
 	case FamilyInstance:
+		if v.Family != nil {
+			if mems, ok := v.Family.MemberAt[v.Idx]; ok {
+				if e, ok := mems[name]; ok {
+					return e, nil
+				}
+			}
+		}
 		// family[i].memberName — look up the member entity
 		memberName := familyMemberName(v.Family.Name, v.Idx, name)
 		if grp, ok := v.rt.Groups[memberName]; ok {
@@ -930,21 +949,21 @@ func (s *Scope) entityAttr(e *Entity, name string) (Value, error) {
 	case "at":
 		return at, nil
 	case "top":
-		return AnchorPt{P: Vec{at[0], at[1] + h/2, 0}, Dir: Vec{0, 1, 0}}, nil
+		return AnchorPt{P: Vec{at[0], at[1] + h/2}, Dir: Vec{0, 1}}, nil
 	case "bottom":
-		return AnchorPt{P: Vec{at[0], at[1] - h/2, 0}, Dir: Vec{0, -1, 0}}, nil
+		return AnchorPt{P: Vec{at[0], at[1] - h/2}, Dir: Vec{0, -1}}, nil
 	case "left":
-		return AnchorPt{P: Vec{at[0] - w/2, at[1], 0}, Dir: Vec{-1, 0, 0}}, nil
+		return AnchorPt{P: Vec{at[0] - w/2, at[1]}, Dir: Vec{-1}}, nil
 	case "right":
-		return AnchorPt{P: Vec{at[0] + w/2, at[1], 0}, Dir: Vec{1, 0, 0}}, nil
+		return AnchorPt{P: Vec{at[0] + w/2, at[1]}, Dir: Vec{1}}, nil
 	case "ul":
-		return AnchorPt{P: Vec{at[0] - w/2, at[1] + h/2, 0}, Dir: Vec{-1, 1, 0}}, nil
+		return AnchorPt{P: Vec{at[0] - w/2, at[1] + h/2}, Dir: Vec{-1, 1}}, nil
 	case "ur":
-		return AnchorPt{P: Vec{at[0] + w/2, at[1] + h/2, 0}, Dir: Vec{1, 1, 0}}, nil
+		return AnchorPt{P: Vec{at[0] + w/2, at[1] + h/2}, Dir: Vec{1, 1}}, nil
 	case "dl":
-		return AnchorPt{P: Vec{at[0] - w/2, at[1] - h/2, 0}, Dir: Vec{-1, -1, 0}}, nil
+		return AnchorPt{P: Vec{at[0] - w/2, at[1] - h/2}, Dir: Vec{-1, -1}}, nil
 	case "dr":
-		return AnchorPt{P: Vec{at[0] + w/2, at[1] - h/2, 0}, Dir: Vec{1, -1, 0}}, nil
+		return AnchorPt{P: Vec{at[0] + w/2, at[1] - h/2}, Dir: Vec{1, -1}}, nil
 	}
 	if f, ok := e.Fields[name]; ok && f.Val != nil {
 		return f.Val, nil
@@ -994,13 +1013,13 @@ func (s *Scope) partAttr(p *PartState, name string) (Value, error) {
 	case "at":
 		return at, nil
 	case "top":
-		return Vec{at[0], at[1] + h/2, 0}, nil
+		return Vec{at[0], at[1] + h/2}, nil
 	case "bottom":
-		return Vec{at[0], at[1] - h/2, 0}, nil
+		return Vec{at[0], at[1] - h/2}, nil
 	case "left":
-		return Vec{at[0] - w/2, at[1], 0}, nil
+		return Vec{at[0] - w/2, at[1]}, nil
 	case "right":
-		return Vec{at[0] + w/2, at[1], 0}, nil
+		return Vec{at[0] + w/2, at[1]}, nil
 	case "w":
 		return w, nil
 	case "h":
@@ -1082,6 +1101,31 @@ func arg1f(args []Value) (float64, error) {
 	return asFloat(args[0])
 }
 
+// reduceFloats folds min/max over either a spread of scalar args (max(a, b, c))
+// or a single list argument (max([a, b, c])).
+func reduceFloats(args []Value, fn func(a, b float64) float64, name string) (Value, error) {
+	if len(args) == 1 {
+		if list, ok := args[0].([]Value); ok {
+			args = list
+		}
+	}
+	if len(args) == 0 {
+		return nil, fmt.Errorf("%s expects at least one value", name)
+	}
+	acc, err := asFloat(args[0])
+	if err != nil {
+		return nil, fmt.Errorf("%s: %v", name, err)
+	}
+	for _, v := range args[1:] {
+		f, err := asFloat(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %v", name, err)
+		}
+		acc = fn(acc, f)
+	}
+	return acc, nil
+}
+
 func entOf(v Value) *Entity {
 	switch x := v.(type) {
 	case *Entity:
@@ -1107,6 +1151,102 @@ func anchorOf(s *Scope, v Value) (Vec, float64, float64) {
 		return vec, 0, 0
 	}
 	return Vec{}, 0, 0
+}
+
+const (
+	lorenzSigma = 10.0
+	lorenzBeta  = 8.0 / 3.0
+)
+
+var lorenzStarts = [][3]float64{
+	{1.0, 1.0, 1.0},
+	{-1.1, 0.6, 5.0},
+	{0.7, -0.9, 10.0},
+	{-0.5, 1.1, 16.0},
+	{1.3, -0.6, 22.0},
+}
+
+type lorenzMemoKey struct {
+	t    float64
+	rho  float64
+	seed int
+}
+
+var lorenzMemo = map[lorenzMemoKey][3]float64{}
+
+func lorenzAt(t, rho, seed float64) (float64, float64, float64) {
+	n := len(lorenzStarts)
+	if n == 0 {
+		return 0, 0, 0
+	}
+	idx := int(seed)
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= n {
+		idx = idx % n
+	}
+	if t <= 0 {
+		return lorenzStarts[idx][0], lorenzStarts[idx][1], lorenzStarts[idx][2]
+	}
+	key := lorenzMemoKey{t: t, rho: rho, seed: idx}
+	if v, ok := lorenzMemo[key]; ok {
+		return v[0], v[1], v[2]
+	}
+	x, y, z := lorenzStarts[idx][0], lorenzStarts[idx][1], lorenzStarts[idx][2]
+	const dt = 0.01
+	steps := int(t / dt)
+	rem := t - float64(steps)*dt
+	for i := 0; i < steps; i++ {
+		dx := lorenzSigma*(y-x)
+		dy := x*(rho-z) - y
+		dz := x*y - lorenzBeta*z
+		x += dx*dt
+		y += dy*dt
+		z += dz*dt
+	}
+	if rem > 0 {
+		dx := lorenzSigma*(y-x)
+		dy := x*(rho-z) - y
+		dz := x*y - lorenzBeta*z
+		x += dx*rem
+		y += dy*rem
+		z += dz*rem
+	}
+	lorenzMemo[key] = [3]float64{x, y, z}
+	if len(lorenzMemo) > 200000 {
+		lorenzMemo = map[lorenzMemoKey][3]float64{}
+	}
+	return x, y, z
+}
+
+func lorenzBuiltin(axis int) builtinFn {
+	return func(s *Scope, a []Value) (Value, error) {
+		if len(a) != 3 {
+			return nil, fmt.Errorf("lorenz_* expects (t, rho, seed)")
+		}
+		t, err := asFloat(a[0])
+		if err != nil {
+			return nil, err
+		}
+		rho, err := asFloat(a[1])
+		if err != nil {
+			return nil, err
+		}
+		seed, err := asFloat(a[2])
+		if err != nil {
+			return nil, err
+		}
+		x, y, z := lorenzAt(t, rho, seed)
+		switch axis {
+		case 0:
+			return x, nil
+		case 1:
+			return y, nil
+		default:
+			return z, nil
+		}
+	}
 }
 
 func init() {
@@ -1139,6 +1279,40 @@ func init() {
 			f, err := arg1f(a)
 			return math.Sqrt(f), err
 		},
+		"log": func(s *Scope, a []Value) (Value, error) {
+			f, err := arg1f(a)
+			return math.Log(f), err
+		},
+		"pow": func(s *Scope, a []Value) (Value, error) {
+			if len(a) != 2 {
+				return nil, fmt.Errorf("pow(base, exp) expects 2 args")
+			}
+			base, err := asFloat(a[0])
+			if err != nil {
+				return nil, err
+			}
+			exp, err := asFloat(a[1])
+			if err != nil {
+				return nil, err
+			}
+			return math.Pow(base, exp), nil
+		},
+		"min": func(s *Scope, a []Value) (Value, error) {
+			return reduceFloats(a, math.Min, "min")
+		},
+		"max": func(s *Scope, a []Value) (Value, error) {
+			return reduceFloats(a, math.Max, "max")
+		},
+		"mix": func(s *Scope, a []Value) (Value, error) {
+			if len(a) != 3 {
+				return nil, fmt.Errorf("mix(from, to, amount) expects 3 args")
+			}
+			u, err := asFloat(a[2])
+			if err != nil {
+				return nil, err
+			}
+			return lerpValue(a[0], a[1], clamp01(u)), nil
+		},
 		"range": func(s *Scope, a []Value) (Value, error) {
 			n, err := arg1f(a)
 			if err != nil {
@@ -1167,7 +1341,7 @@ func init() {
 				gap, _ = asFloat(a[1])
 			}
 			at, _, h := anchorOf(s, a[0])
-			return Vec{at[0], at[1] - h/2 - gap - 0.3, 0}, nil
+			return Vec{at[0], at[1] - h/2 - gap - 0.3}, nil
 		},
 		"above": func(s *Scope, a []Value) (Value, error) {
 			if len(a) < 1 {
@@ -1178,15 +1352,15 @@ func init() {
 				gap, _ = asFloat(a[1])
 			}
 			at, _, h := anchorOf(s, a[0])
-			return Vec{at[0], at[1] + h/2 + gap + 0.3, 0}, nil
+			return Vec{at[0], at[1] + h/2 + gap + 0.3}, nil
 		},
 		"left": func(s *Scope, a []Value) (Value, error) {
 			d, err := arg1f(a)
-			return Vec{-d, 0, 0}, err
+			return Vec{-d}, err
 		},
 		"right": func(s *Scope, a []Value) (Value, error) {
 			d, err := arg1f(a)
-			return Vec{d, 0, 0}, err
+			return Vec{d}, err
 		},
 		"right_of": func(s *Scope, a []Value) (Value, error) {
 			if len(a) < 2 {
@@ -1194,7 +1368,7 @@ func init() {
 			}
 			gap, _ := asFloat(a[1])
 			at, w, _ := anchorOf(s, a[0])
-			return Vec{at[0] + w/2 + gap, at[1], 0}, nil
+			return Vec{at[0] + w/2 + gap, at[1]}, nil
 		},
 		"corner": func(s *Scope, a []Value) (Value, error) {
 			if len(a) != 1 {
@@ -1206,7 +1380,7 @@ func init() {
 			}
 			const buff = 0.35
 			return AnchorPt{
-				P:   Vec{d[0] * (screenEdgeX - buff), d[1] * (screenTop - buff), 0},
+				P:   Vec{d[0] * (screenEdgeX - buff), d[1] * (screenTop - buff)},
 				Dir: d,
 			}, nil
 		},
@@ -1218,7 +1392,7 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			return Vec{d[0] * screenEdgeX, d[1] * (screenTop - 0.4), 0}, nil
+			return Vec{d[0] * screenEdgeX, d[1] * (screenTop - 0.4)}, nil
 		},
 		"stack": func(s *Scope, a []Value) (Value, error) {
 			// a stack region; unresolved names degrade to the screen region
@@ -1296,8 +1470,11 @@ func init() {
 			n, _ := asFloat(a[1])
 			r := 0.6 + 2.4*i/math.Max(n, 1)
 			ang := i * 2.399963 // golden angle
-			return Vec{r * math.Cos(ang), r * math.Sin(ang), 0}, nil
+			return Vec{r * math.Cos(ang), r * math.Sin(ang)}, nil
 		},
+		"lorenz_x": lorenzBuiltin(0),
+		"lorenz_y": lorenzBuiltin(1),
+		"lorenz_z": lorenzBuiltin(2),
 	}
 }
 
@@ -1306,9 +1483,9 @@ type stackRegion struct{}
 func (s *Scope) stackAttr(name string) (Value, error) {
 	switch name {
 	case "top":
-		return Vec{0, screenTop, 0}, nil
+		return Vec{0, screenTop}, nil
 	case "bottom":
-		return Vec{0, -screenTop, 0}, nil
+		return Vec{0, -screenTop}, nil
 	case "center":
 		return Vec{}, nil
 	}
@@ -1388,7 +1565,7 @@ func entitySize(e *Entity) (w, h float64) {
 			return lay.W, lay.H
 		}
 	case "axes", "plane":
-		return 10, 6
+		return axesSize(e)
 	}
 	return 1 * scale, 1 * scale
 }
@@ -1419,11 +1596,34 @@ func axesPoint(ax *Entity, x, y float64) Vec {
 func axesLocalPoint(ax *Entity, x, y float64) Vec {
 	xr := rangeOf(ax, "x_range", -7, 7)
 	yr := rangeOf(ax, "y_range", -4, 4)
-	w, h := 10.0, 6.0
+	w, h := axesSize(ax)
 	cx, cy := (xr[0]+xr[1])/2, (yr[0]+yr[1])/2
 	sx := w / (xr[1] - xr[0])
 	sy := h / (yr[1] - yr[0])
-	return Vec{(x - cx) * sx, (y - cy) * sy, 0}
+	return Vec{(x - cx) * sx, (y - cy) * sy}
+}
+
+// axesSize is the world-space extent (width, height) the axes/plane occupies in
+// the scene. It is the physical footprint, kept separate from the data range
+// (x_range/y_range), which sets the data→world scale. Animate `size` to grow or
+// shrink the whole graph; animate the ranges to zoom within a fixed footprint.
+func axesSize(ax *Entity) (w, h float64) {
+	w, h = 10, 6
+	f, ok := ax.Fields["size"]
+	if !ok || f.Val == nil {
+		return
+	}
+	list, ok := f.Val.([]Value)
+	if !ok || len(list) < 2 {
+		return
+	}
+	if v, err := asFloat(list[0]); err == nil {
+		w = v
+	}
+	if v, err := asFloat(list[1]); err == nil {
+		h = v
+	}
+	return
 }
 
 func rangeOf(e *Entity, name string, lo, hi float64) [3]float64 {

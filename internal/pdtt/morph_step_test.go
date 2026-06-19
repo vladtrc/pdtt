@@ -58,9 +58,9 @@ plane dst:
 	}
 
 	// src at [0,0], dst at [2,0] ⇒ offset = srcPos - dst.at = [-2,0].
-	check(0.0, want{srcOp: 1, dstOp: 0, dstOff: Vec{-2, 0, 0}, srcOff: Vec{0, 0, 0}})
-	check(0.5, want{srcOp: 0.5, dstOp: 0.5, dstOff: Vec{-1, 0, 0}, srcOff: Vec{1, 0, 0}})
-	check(1.0, want{srcOp: 0, dstOp: 1, dstOff: Vec{0, 0, 0}, srcOff: Vec{2, 0, 0}})
+	check(0.0, want{srcOp: 1, dstOp: 0, dstOff: Vec{-2, 0}, srcOff: Vec{0, 0}})
+	check(0.5, want{srcOp: 0.5, dstOp: 0.5, dstOff: Vec{-1, 0}, srcOff: Vec{1, 0}})
+	check(1.0, want{srcOp: 0, dstOp: 1, dstOff: Vec{0, 0}, srcOff: Vec{2, 0}})
 
 	if src.Active {
 		t.Error("u=1: src still active, want inactive")

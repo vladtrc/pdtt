@@ -30,15 +30,15 @@ dot target:
 	if err := rt.Step(2); err != nil {
 		t.Fatalf("Step(2): %v", err)
 	}
-	wantMid := Vec{-2.5, 0, 0}
+	wantMid := Vec{-2.5, 0}
 	assertVecNear(t, "source.at during tween", source.fvec("at"), wantMid)
-	assertVecNear(t, "target.at during tween", target.fvec("at"), Vec{-2, 0, 0})
+	assertVecNear(t, "target.at during tween", target.fvec("at"), Vec{-2, 0})
 
 	if err := rt.Step(5); err != nil {
 		t.Fatalf("Step(5): %v", err)
 	}
 	assertVecNear(t, "source.at after tween", source.fvec("at"), target.fvec("at"))
-	assertVecNear(t, "tracked target position", target.fvec("at"), Vec{0, 2, 0})
+	assertVecNear(t, "tracked target position", target.fvec("at"), Vec{0, 2})
 }
 
 func TestPathPointsTrackDynamicEndpointFields(t *testing.T) {
@@ -72,8 +72,8 @@ path chord:
 		t.Fatalf("points len = %d, want 2", len(points))
 	}
 	s := math.Sqrt(0.5)
-	assertVecNear(t, "path point 0", points[0], Vec{s, s, 0})
-	assertVecNear(t, "path point 1", points[1], Vec{2 * s, 2 * s, 0})
+	assertVecNear(t, "path point 0", points[0], Vec{s, s})
+	assertVecNear(t, "path point 1", points[1], Vec{2 * s, 2 * s})
 }
 
 func assertVecNear(t *testing.T, label string, got, want Vec) {

@@ -16,6 +16,23 @@ import "math"
 // morphSamples is the per-loop resampling resolution used for correspondence.
 const morphSamples = 192
 
+// pathWorldPoints returns an entity path's control points in world space.
+func pathWorldPoints(e *Entity) []Vec {
+	return pathPoints(e, e.transform())
+}
+
+// pathIsClosed reports whether a path entity is marked closed in the scene.
+func pathIsClosed(e *Entity) bool {
+	return e.fnum("closed") != 0
+}
+
+// Static outline sampling and morph loop extraction share pathWorldPoints but
+// diverge on open paths: frozen frames draw the visible polyline (resampleOpen
+// in outlinePoints, drawPath without closing), while morphing folds open paths
+// into zero-area loops via thereAndBack so interpolation never toggles a
+// closed flag mid-animation. That split is intentional — do not route static
+// draw through thereAndBack.
+
 // morphLoops extracts an entity's outline as closed loops in world space.
 func morphLoops(e *Entity) [][]Vec {
 	if isTextType(e.Type) {
@@ -28,11 +45,11 @@ func morphLoops(e *Entity) [][]Vec {
 		return out
 	}
 	if e.Type == "path" {
-		pts := pathPoints(e, e.transform())
+		pts := pathWorldPoints(e)
 		if len(pts) < 2 {
 			return nil
 		}
-		if e.fnum("closed") != 0 {
+		if pathIsClosed(e) {
 			return [][]Vec{pts}
 		}
 		return [][]Vec{thereAndBack(pts)}
@@ -153,7 +170,6 @@ func lerpLoops(s, d [][]Vec, u float64) [][]Vec {
 			pc[i] = Vec{
 				lerp(a[i][0], b[i][0], u),
 				lerp(a[i][1], b[i][1], u),
-				lerp(a[i][2], b[i][2], u),
 			}
 		}
 		out[ci] = pc

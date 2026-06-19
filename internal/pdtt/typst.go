@@ -32,17 +32,11 @@ func (b *Box) Include(p Vec) {
 	if p[1] < b.Min[1] {
 		b.Min[1] = p[1]
 	}
-	if p[2] < b.Min[2] {
-		b.Min[2] = p[2]
-	}
 	if p[0] > b.Max[0] {
 		b.Max[0] = p[0]
 	}
 	if p[1] > b.Max[1] {
 		b.Max[1] = p[1]
-	}
-	if p[2] > b.Max[2] {
-		b.Max[2] = p[2]
 	}
 }
 

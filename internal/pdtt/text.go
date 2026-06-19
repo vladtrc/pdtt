@@ -248,7 +248,6 @@ func transformContoursToSegment(contours [][]Vec, bbox Box, worldPerPt float64) 
 				// Typst SVG y grows downward; world y grows up. Flip about the
 				// glyph's vertical center so text reads upright.
 				cy - p[1]*worldPerPt,
-				0,
 			}
 		}
 		out = append(out, dst)
@@ -401,7 +400,7 @@ func (lay *TextLayout) partBox(p *PartState) (Vec, float64, float64) {
 			if sg.Part == p {
 				cx := at[0] - line.W/2 + sg.X + sg.W/2
 				cy := at[1] + line.Y
-				return Vec{cx, cy, 0}, sg.W, lay.Em
+				return Vec{cx, cy}, sg.W, lay.Em
 			}
 		}
 	}
@@ -431,7 +430,7 @@ func textOutlineContours(e *Entity) [][]Vec {
 				}
 				dst := make([]Vec, len(contour))
 				for i, p := range contour {
-					q := Vec{x0 + p[0], y0 + p[1], at[2]}
+					q := Vec{x0 + p[0], y0 + p[1]}
 					dst[i] = rotateAround(q, at, angle)
 				}
 				out = append(out, dst)

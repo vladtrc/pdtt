@@ -109,7 +109,7 @@ func ellipsePoints(rx, ry float64, n int) []Vec {
 	pts := make([]Vec, n)
 	for i := 0; i < n; i++ {
 		t := 2 * math.Pi * float64(i) / float64(n)
-		pts[i] = Vec{rx * math.Cos(t), ry * math.Sin(t), 0}
+		pts[i] = Vec{rx * math.Cos(t), ry * math.Sin(t)}
 	}
 	return pts
 }
@@ -123,12 +123,12 @@ func arcPoints(r, start, end float64, n int) []Vec {
 	}
 	span := end - start
 	if span <= 1e-9 {
-		return []Vec{{r * math.Cos(start), r * math.Sin(start), 0}}
+		return []Vec{{r * math.Cos(start), r * math.Sin(start)}}
 	}
 	pts := make([]Vec, n)
 	for i := 0; i < n; i++ {
 		t := start + span*float64(i)/float64(n-1)
-		pts[i] = Vec{r * math.Cos(t), r * math.Sin(t), 0}
+		pts[i] = Vec{r * math.Cos(t), r * math.Sin(t)}
 	}
 	return pts
 }
@@ -150,10 +150,10 @@ func rectPoints(w, h, cornerRadius float64) []Vec {
 	}
 	if cornerRadius <= 1e-9 {
 		return []Vec{
-			{-hw, -hh, 0},
-			{hw, -hh, 0},
-			{hw, hh, 0},
-			{-hw, hh, 0},
+			{-hw, -hh},
+			{hw, -hh},
+			{hw, hh},
+			{-hw, hh},
 		}
 	}
 	const cornerSeg = 6
@@ -164,18 +164,17 @@ func rectPoints(w, h, cornerRadius float64) []Vec {
 			pts = append(pts, Vec{
 				cx + cornerRadius*math.Cos(t),
 				cy + cornerRadius*math.Sin(t),
-				0,
 			})
 		}
 	}
 	// bottom edge start -> bottom-right corner -> right -> top-right -> top -> top-left -> left -> bottom-left
-	pts = append(pts, Vec{-hw + cornerRadius, -hh, 0})
+	pts = append(pts, Vec{-hw + cornerRadius, -hh})
 	addArc(hw-cornerRadius, -hh, -math.Pi/2, 0)
-	pts = append(pts, Vec{hw, hh - cornerRadius, 0})
+	pts = append(pts, Vec{hw, hh - cornerRadius})
 	addArc(hw-cornerRadius, hh-cornerRadius, 0, math.Pi/2)
-	pts = append(pts, Vec{-hw + cornerRadius, hh, 0})
+	pts = append(pts, Vec{-hw + cornerRadius, hh})
 	addArc(-hw+cornerRadius, hh-cornerRadius, math.Pi/2, math.Pi)
-	pts = append(pts, Vec{-hw, -hh + cornerRadius, 0})
+	pts = append(pts, Vec{-hw, -hh + cornerRadius})
 	addArc(-hw+cornerRadius, -hh+cornerRadius, math.Pi, 3*math.Pi/2)
 	return pts
 }
@@ -185,7 +184,7 @@ func regularPolygonPoints(sides int, r, angle float64) []Vec {
 	step := 2 * math.Pi / float64(sides)
 	for i := 0; i < sides; i++ {
 		t := angle + step*float64(i)
-		pts[i] = Vec{r * math.Cos(t), r * math.Sin(t), 0}
+		pts[i] = Vec{r * math.Cos(t), r * math.Sin(t)}
 	}
 	return pts
 }

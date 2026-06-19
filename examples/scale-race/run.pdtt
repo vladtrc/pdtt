@@ -1,0 +1,124 @@
+scene scale_race
+
+# Exponential vs. polynomial. The scene opens tight on the FIRST crossing
+# (~1.05, ~1.1) held in the center of the frame: x^2 has just caught and passed
+# 1.1^x, so the polynomial looks like the clear winner. Then the data range
+# zooms out by two orders of magnitude. As it does, 1.1^x rears up, overtakes
+# x^2 again at the second crossing (~95.7, ~9157), and rockets off the top of
+# the frame while x^2 trails far below: the whole point of "eventually
+# exponential wins" is that you only see it once you zoom out.
+#
+# The window height tracks whichever curve is meant to fill the frame. Through
+# the first two acts that is x^2 (yhi = kfac * xhi^2), so the polynomial sits
+# framed upper-right instead of collapsing onto the axis. In the final act efac
+# fades in an exponential term, so yhi follows 1.1^x instead — the window can
+# never outrun the exponential, so it stays framed while x^2 flattens out. (A
+# linearly ballooning kfac was the bug that briefly pressed both curves flat.)
+
+xhi:   2.1           # opening window centers the first crossing (~1.05, ~1.1)
+xstep: 0.5
+kfac:  0.5           # yhi/xhi^2 — keeps x^2 framed; eases up during the zoom
+efac:  0             # blends 1.1^x into yhi for the finale (0 = pure x^2 frame)
+yhi:   kfac * xhi * xhi + efac * pow(1.1, xhi)
+ystep: yhi / 6
+
+ix: 1.05138          # first crossing (x^2 catches 1.1^x) — opening marker
+iy: 1.1054
+cx: 95.69            # second crossing — where 1.1^x overtakes for good
+cy: 9157
+
+plane grid:
+  at: [0.6, 0.4]
+  size: [11, 6.4]
+  x_range: [0, xhi, xstep]
+  y_range: [0, yhi, ystep]
+
+axes ax:
+  at: [0.6, 0.4]
+  size: [11, 6.4]
+  frame: 1
+  x_range: [0, xhi, xstep]
+  y_range: [0, yhi, ystep]
+
+plot quad:
+  axes: ax
+  fn: x * x
+  color: color.yellow
+
+plot expo:
+  axes: ax
+  fn: pow(1.1, x)
+  color: color.pink
+
+dot cross:
+  at: ax.point(ix, iy)
+  radius: 0.06
+  color: color.white
+
+# each label rides the leading edge of its curve: x tracks the draw-in progress
+# (xhi * draw) and the zoom (xhi), clamped to the tallest x that still fits yhi
+# so the tag stays in frame; y is that x evaluated on the curve.
+typst quad_lab:
+  text: "x^2"
+  at: ax.point(min(xhi * quad.draw, sqrt(yhi)), pow(min(xhi * quad.draw, sqrt(yhi)), 2)) + approx.left * 0.36 + approx.above * 0.1
+  scale: 0.9
+  color: color.yellow
+
+typst expo_lab:
+  text: "1.1^x"
+  at: ax.point(min(xhi * expo.draw, log(yhi) / log(1.1)), pow(1.1, min(xhi * expo.draw, log(yhi) / log(1.1)))) + approx.right * 0.28 + approx.above * 0.06
+  scale: 0.9
+  color: color.pink
+
+# --- act 0: graph appears, polynomial already ahead, exponential flat ---
+| 0.7s | smooth
+| grid{draw: 0} -> grid
+| ax{opacity: 0} -> ax
+| quad_lab{opacity: 0} -> quad_lab
+| expo_lab{opacity: 0} -> expo_lab
+| cross{opacity: 0, scale: 0.2} -> cross
+
+| 0.8s | smooth
+| quad{draw: 0} -> quad
+| expo{draw: 0} -> expo
+
+# marker has done its job at the first crossing — retire it before the zoom so
+# it never floats off-curve mid-transit
+| 0.3s | smooth
+| cross.opacity -> 0
+
+# --- act 1: zoom out two orders of magnitude; 1.1^x overtakes and escapes ---
+| 4.5s | smooth
+| xhi -> 120
+| xstep -> 20
+| kfac -> 1.04
+| ix -> cx
+| iy -> cy
+
+# mark the second crossing once the curves have settled there
+| 0.5s | smooth
+| cross.opacity -> 1
+
+# --- act 2: hand framing over to the exponential (efac -> 1) so 1.1^x settles
+# in as the curve that fills the frame ---
+| 0.9s | smooth
+| efac -> 1
+| xhi -> 135
+| xstep -> 30
+| cross.opacity -> 0
+
+# keep pulling back: 1.1^x stays framed while x^2 collapses to a flat line on
+# the axis — the exact mirror of the opening
+| 2.4s | smooth
+| xhi -> 200
+| xstep -> 50
+
+# --- outro ---
+| 0.7s | smooth
+| grid.draw -> 0
+| ax.opacity -> 0
+| quad.opacity -> 0
+| expo.opacity -> 0
+| quad_lab.opacity -> 0
+| expo_lab.opacity -> 0
+| cross.opacity -> 0

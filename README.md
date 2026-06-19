@@ -27,7 +27,7 @@ The external Go tools are executed with `go run`, so they do not need to be inst
 
 ```bash
 make                              # build, then render EVERY example in parallel
-make render EXAMPLE=40-shape-morph  # render a single example
+make render EXAMPLE=shape-morph  # render a single example
 ```
 
 Outputs are written to `examples/<name>/res/`:
@@ -50,7 +50,7 @@ installed, it warns and skips without failing the build.
 ## CLI
 
 ```bash
-./bin/pdtt -i examples/40-shape-morph/run.pdtt -o examples/40-shape-morph/res -fps 30 -w 960 -h 540
+./bin/pdtt -i examples/shape-morph/run.pdtt -o examples/shape-morph/res -fps 30 -w 960 -h 540
 ```
 
 Flags:

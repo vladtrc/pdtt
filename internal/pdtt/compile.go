@@ -8,8 +8,10 @@ package pdtt
 import (
 	"fmt"
 	"math"
+	"reflect"
 	"sort"
 	"strings"
+	"time"
 )
 
 type easeFn func(float64) float64
@@ -165,6 +167,7 @@ type Anim struct {
 	Ease    easeFn
 	Targets []Ref
 	Binds   map[string]Value
+	Inputs  map[string]bool
 	Start   func(a *Anim, rt *Runtime) error
 	Update  func(a *Anim, rt *Runtime, u float64)
 	Line    int
@@ -219,11 +222,16 @@ type Runtime struct {
 
 	liveFields  []fieldSlot
 	liveGlobals []*GVar // live global variables (colon-binding)
+	liveDeps    map[string]bool
 	post        map[string]*PostAssign
 	warned      map[string]bool
 
 	writerAnims  map[string][]*Anim
 	globalWriter map[string]bool
+
+	// Per evalLiveFields pass: cache family-local bindings keyed by it.Cols identity.
+	localBindCache map[uintptr]map[string]Value
+	evalBinds      map[string]Value
 }
 
 type fieldSlot struct {
@@ -239,6 +247,50 @@ func (rt *Runtime) warnOnce(msg string) {
 		rt.warned[msg] = true
 		fmt.Println("warning:", msg)
 	}
+}
+
+func mapCacheKey(m map[string]Value) uintptr {
+	if m == nil {
+		return 0
+	}
+	return reflect.ValueOf(m).Pointer()
+}
+
+func (rt *Runtime) clearLocalBindCache() {
+	rt.localBindCache = nil
+}
+
+func (rt *Runtime) cachedLocalBind(cols map[string]Value, name string) (Value, bool) {
+	if rt.localBindCache == nil {
+		return nil, false
+	}
+	m, ok := rt.localBindCache[mapCacheKey(cols)]
+	if !ok {
+		return nil, false
+	}
+	v, ok := m[name]
+	return v, ok
+}
+
+func (rt *Runtime) cacheLocalBind(cols map[string]Value, name string, val Value) {
+	key := mapCacheKey(cols)
+	if rt.localBindCache == nil {
+		rt.localBindCache = make(map[uintptr]map[string]Value)
+	}
+	if rt.localBindCache[key] == nil {
+		rt.localBindCache[key] = make(map[string]Value)
+	}
+	rt.localBindCache[key][name] = val
+}
+
+func (rt *Runtime) fieldEvalScope(it Value) *Scope {
+	if rt.evalBinds == nil {
+		rt.evalBinds = map[string]Value{"it": it}
+	} else {
+		rt.evalBinds["it"] = it
+		delete(rt.evalBinds, "self")
+	}
+	return &Scope{rt: rt, binds: rt.evalBinds}
 }
 
 func NewRuntime() *Runtime {
@@ -344,6 +396,45 @@ func (rt *Runtime) indexWriters() {
 			rt.globalWriter[name] = true
 		}
 	}
+}
+
+func (rt *Runtime) animNeedsLiveRefresh(a *Anim) bool {
+	if len(rt.liveDeps) == 0 {
+		return true
+	}
+	for _, ref := range a.Targets {
+		if ref != nil && rt.liveDeps[ref.Key()] {
+			return true
+		}
+	}
+	return false
+}
+
+func (rt *Runtime) animNeedsLiveInput(a *Anim) bool {
+	if len(a.Inputs) == 0 || len(rt.liveDeps) == 0 {
+		return false
+	}
+	for dep := range a.Inputs {
+		if rt.liveDeps[dep] {
+			return true
+		}
+		if strings.Contains(dep, ".") {
+			continue
+		}
+		prefix := dep + "."
+		for liveDep := range rt.liveDeps {
+			if strings.HasPrefix(liveDep, prefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func exprInputDeps(expr Expr) map[string]bool {
+	deps := map[string]bool{}
+	exprDeps(expr, deps)
+	return deps
 }
 
 func evalTweenGoal(rt *Runtime, rhs Expr, binds map[string]Value, elemIdx, elemN int, cur Value) (Value, error) {
@@ -729,13 +820,13 @@ func (rt *Runtime) addFamily(v FamilyStmt, scope *Scope) error {
 
 		// Create a proxy entity for this instance in the family group
 		proxy := &Entity{
-			Type:   "__family_proxy__",
-			Name:   v.Name,
-			Idx:    idxPos,
-			N:      len(indices),
-			Fields: map[string]*Field{},
-			Reveal: 1,
-			rt:     rt,
+			IsFamilyProxy: true,
+			Name:          v.Name,
+			Idx:           idxPos,
+			N:             len(indices),
+			Fields:        map[string]*Field{},
+			Reveal:        1,
+			rt:            rt,
 		}
 		proxy.It = itVal
 		famGroup.Items = append(famGroup.Items, proxy)
@@ -756,11 +847,19 @@ func (rt *Runtime) addFamily(v FamilyStmt, scope *Scope) error {
 
 		// Now populate sibling references in Cols so member field expressions
 		// can reference each other by short name (e.g. `to: mark.at`).
+		memMap := map[string]*Entity{}
 		for _, mem := range v.Members {
 			entityName := familyMemberName(v.Name, actualIdx, mem.Name)
 			if grp, ok := rt.Groups[entityName]; ok && len(grp.Items) == 1 {
 				cols[mem.Name] = grp.Items[0]
+				memMap[mem.Name] = grp.Items[0]
 			}
+		}
+		if len(memMap) > 0 {
+			if fam.MemberAt == nil {
+				fam.MemberAt = map[int]map[string]*Entity{}
+			}
+			fam.MemberAt[actualIdx] = memMap
 		}
 		// Also update the proxy's It to have the sibling refs
 		proxy.It = ItVal{Val: idxVal, I: idxPos, N: len(indices), Cols: cols}
@@ -1607,7 +1706,7 @@ func (rt *Runtime) expandArrow(row Row, w winState, mk func(from, to float64, eb
 // resolveTrail resolves a multi-hop attribute path starting from entity e.
 // For family proxy entities, the first trail element is a member name.
 func (rt *Runtime) resolveTrail(e *Entity, trail []string, binds map[string]Value) (Ref, error) {
-	if e.Type == "__family_proxy__" && len(trail) >= 1 {
+	if e.IsFamilyProxy && len(trail) >= 1 {
 		// First trail element: member name
 		memberName := familyMemberName(e.Name, e.Idx, trail[0])
 		// The actual entity index in the family comes from the proxy's bind var
@@ -1930,6 +2029,7 @@ func (rt *Runtime) entityTrailRef(lhs Expr, binds map[string]Value) (*Entity, []
 // fillTween: standard tween; elemIdx >= 0 enables list-RHS positional pairing.
 func fillTween(a *Anim, ref Ref, rhs Expr, elemIdx, elemN int) {
 	a.Targets = []Ref{ref}
+	a.Inputs = exprInputDeps(rhs)
 	fr, isField := ref.(FieldRef)
 	textMorphField := isField && fr.F != nil && fr.E != nil &&
 		fr.F.Name == "text" && isTextType(fr.E.Type)
@@ -1975,7 +2075,9 @@ func fillTween(a *Anim, ref Ref, rhs Expr, elemIdx, elemN int) {
 					ref.Set(a.goal[0])
 					clearTextMorph(a.textMorph.E)
 				}
-				rt.setPost(ref, rhs, a.Binds, elemIdx, elemN)
+				if len(a.Inputs) > 0 {
+					rt.setPost(ref, rhs, a.Binds, elemIdx, elemN)
+				}
 			}
 			return
 		}
@@ -1985,7 +2087,9 @@ func fillTween(a *Anim, ref Ref, rhs Expr, elemIdx, elemN int) {
 		}
 		ref.Set(lerpValue(from, a.goal[0], u))
 		if u >= 1 {
-			rt.setPost(ref, rhs, a.Binds, elemIdx, elemN)
+			if len(a.Inputs) > 0 {
+				rt.setPost(ref, rhs, a.Binds, elemIdx, elemN)
+			}
 		}
 	}
 }
@@ -2078,6 +2182,7 @@ func (rt *Runtime) fillWarpArrow(a *Anim, ref Ref) {
 // record arrow: `frame -> home` — field-wise tweens paired by name.
 func (rt *Runtime) fillRecordArrow(a *Anim, lhs, rhs Expr, binds map[string]Value) {
 	var refs []Ref
+	a.Inputs = exprInputDeps(rhs)
 	a.Start = func(a *Anim, rt *Runtime) error {
 		s := &Scope{rt: rt, binds: binds}
 		lv, err := s.Eval(lhs)
@@ -2631,6 +2736,13 @@ func (rt *Runtime) livenessPass() error {
 			rt.liveFields = append(rt.liveFields, fieldSlot{E: sl.e, F: sl.f})
 		}
 	}
+	rt.liveDeps = map[string]bool{}
+	for _, sl := range rt.liveFields {
+		rt.liveDeps[sl.E.Name+"."+sl.F.Name] = true
+		for dep := range depsOf[sl.F] {
+			rt.liveDeps[dep] = true
+		}
+	}
 	sort.SliceStable(rt.liveFields, func(i, j int) bool {
 		return rt.liveFields[i].F.depth < rt.liveFields[j].F.depth
 	})
@@ -2773,9 +2885,21 @@ func isRootField(e *Entity, fname string, written map[string]*Anim) bool {
 // ---------- frame stepping ----------
 
 func (rt *Runtime) Step(t float64) error {
+	return rt.stepAt(t, nil)
+}
+
+func (rt *Runtime) stepAt(t float64, prof *StepBreakdown) error {
 	rt.Dt = t - rt.T
 	rt.T = t
 
+	timePhase := func(start time.Time) float64 {
+		if prof == nil {
+			return 0
+		}
+		return durMs(time.Since(start))
+	}
+
+	eventsStart := time.Now()
 	for _, ev := range rt.Events {
 		if !ev.done && ev.T <= t+1e-9 {
 			ev.done = true
@@ -2784,11 +2908,17 @@ func (rt *Runtime) Step(t float64) error {
 			}
 		}
 	}
+	if prof != nil {
+		prof.EventsMs += timePhase(eventsStart)
+	}
 
 	evalLiveGlobals := func() error {
 		for _, g := range rt.liveGlobals {
 			if g.Def == nil || rt.globalHasWriter(g.Name) {
 				continue
+			}
+			if prof != nil {
+				prof.GlobalEvals++
 			}
 			s := &Scope{rt: rt}
 			val, err := s.Eval(g.Def)
@@ -2800,6 +2930,7 @@ func (rt *Runtime) Step(t float64) error {
 		return nil
 	}
 	evalLiveFields := func(allowActiveWritten bool) error {
+		rt.clearLocalBindCache()
 		for _, sl := range rt.liveFields {
 			if sl.F.Frozen {
 				continue
@@ -2808,7 +2939,10 @@ func (rt *Runtime) Step(t float64) error {
 			if rt.fieldHasWriter(key) && (!allowActiveWritten || !rt.fieldHasActiveWriter(key, t)) {
 				continue
 			}
-			s := &Scope{rt: rt, binds: map[string]Value{"it": sl.E.It}}
+			if prof != nil {
+				prof.FieldEvals++
+			}
+			s := rt.fieldEvalScope(sl.E.It)
 			val, err := s.Eval(sl.F.Def)
 			if err != nil {
 				return fmt.Errorf("live field %s.%s: %v", sl.E.Name, sl.F.Name, err)
@@ -2829,18 +2963,49 @@ func (rt *Runtime) Step(t float64) error {
 		}
 	}
 
+	liveInitStart := time.Now()
 	applyPosts()
 	if err := evalLiveGlobals(); err != nil {
 		return err
 	}
-	// Active tweens targeting live fields read these fresh expression values.
 	if err := evalLiveFields(true); err != nil {
 		return err
 	}
+	if prof != nil {
+		prof.LiveInitMs += timePhase(liveInitStart)
+	}
 
+	liveDirty := false
+	runLiveEval := func(allowActiveWritten bool) error {
+		if err := evalLiveGlobals(); err != nil {
+			return err
+		}
+		return evalLiveFields(allowActiveWritten)
+	}
+	refreshLive := func(allowActiveWritten bool) error {
+		if prof != nil {
+			prof.RefreshCalls++
+		}
+		midStart := time.Now()
+		if err := runLiveEval(allowActiveWritten); err != nil {
+			return err
+		}
+		liveDirty = false
+		if prof != nil {
+			prof.LiveMidMs += timePhase(midStart)
+		}
+		return nil
+	}
+
+	animsStart := time.Now()
 	for _, a := range rt.Anims {
 		if a.done || t+1e-9 < a.T0 {
 			continue
+		}
+		if liveDirty && rt.animNeedsLiveInput(a) {
+			if err := refreshLive(false); err != nil {
+				return err
+			}
 		}
 		if !a.started {
 			a.started = true
@@ -2861,35 +3026,43 @@ func (rt *Runtime) Step(t float64) error {
 		if a.Update != nil {
 			a.Update(a, rt, a.Ease(u))
 		}
-		// Later rows in the same block must see dynamic expressions derived
-		// from roots written by earlier rows on this frame.
-		if err := evalLiveGlobals(); err != nil {
-			return err
+		if rt.animNeedsLiveRefresh(a) {
+			liveDirty = true
 		}
-		if err := evalLiveFields(false); err != nil {
-			return err
-		}
+	}
+	if prof != nil {
+		prof.AnimsMs += timePhase(animsStart)
 	}
 
-	// Derived names and fields should reflect roots as they stand on this
-	// frame after tweens/post-assignments have written them.
-	if err := evalLiveGlobals(); err != nil {
+	liveFinalStart := time.Now()
+	if prof != nil {
+		prof.RefreshCalls++
+	}
+	if err := runLiveEval(false); err != nil {
 		return err
 	}
-	if err := evalLiveFields(false); err != nil {
-		return err
+	if prof != nil {
+		prof.LiveFinalMs += timePhase(liveFinalStart)
 	}
-	// A completed tween is a live assignment. Re-apply it after its RHS has
-	// settled for this frame, then refresh anything derived from that target.
+
+	postsStart := time.Now()
 	applyPosts()
+	if prof != nil {
+		prof.PostsMs += timePhase(postsStart)
+	}
+
+	livePostStart := time.Now()
 	if err := evalLiveGlobals(); err != nil {
 		return err
 	}
 	if err := evalLiveFields(false); err != nil {
 		return err
 	}
+	if prof != nil {
+		prof.LivePostMs += timePhase(livePostStart)
+	}
 
-	// rate fields: fixed-dt Euler, prev-frame self
+	ratesStart := time.Now()
 	if rt.Dt > 0 {
 		for _, e := range rt.Entities {
 			for _, n := range e.Order {
@@ -2897,7 +3070,11 @@ func (rt *Runtime) Step(t float64) error {
 				if !f.Rate || f.Def == nil {
 					continue
 				}
-				s := &Scope{rt: rt, binds: map[string]Value{"it": e.It, "self": f.Val}}
+				if prof != nil {
+					prof.FieldEvals++
+				}
+				s := rt.fieldEvalScope(e.It)
+				s.binds["self"] = f.Val
 				rate, err := s.Eval(f.Def)
 				if err != nil {
 					return fmt.Errorf("rate field %s.%s: %v", e.Name, n, err)
@@ -2916,6 +3093,9 @@ func (rt *Runtime) Step(t float64) error {
 				}
 			}
 		}
+	}
+	if prof != nil {
+		prof.RatesMs += timePhase(ratesStart)
 	}
 	return nil
 }

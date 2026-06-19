@@ -3,14 +3,14 @@ package pdtt
 import "testing"
 
 func TestClosedPathTrimStartsEmptyAndUsesClosingSegment(t *testing.T) {
-	pts := []Vec{{0, 0, 0}, {2, 0, 0}, {2, 2, 0}, {0, 2, 0}}
+	pts := []Vec{{0, 0}, {2, 0}, {2, 2}, {0, 2}}
 
 	if got := trimPathPoints(closePathPoints(pts), 0); got != nil {
 		t.Fatalf("draw=0 returned %v, want nil", got)
 	}
 
 	got := trimPathPoints(closePathPoints(pts), 0.875)
-	want := Vec{0, 1, 0}
+	want := Vec{0, 1}
 	if len(got) != 5 {
 		t.Fatalf("trimmed point count = %d, want 5: %v", len(got), got)
 	}

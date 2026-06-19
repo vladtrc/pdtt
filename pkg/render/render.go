@@ -78,7 +78,7 @@ func Scene(src string, outDir string, cfg Config) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	res, err := pdtt.NewFrameRenderer().Render(rt, pcfg)
+	res, err := pdtt.NewFrameRenderer().Render(rt, pcfg, nil)
 	if err != nil {
 		return nil, err
 	}
