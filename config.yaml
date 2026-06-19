@@ -1,0 +1,18 @@
+port: 3737
+
+mysql:
+  dsn: "pdttweb:CHANGE_ME@tcp(127.0.0.1:3306)/pdttweb?parseTime=true&charset=utf8mb4"
+
+data_dir: ./data
+render_timeout: 3m
+retention: 24h
+max_scene_bytes: 1048576
+admin_secret: JkY7y7ic_i6xsh8qFCOHGQk3QQXYslQ2sfhMAkLvSxE
+lease_duration: 2m
+cleanup_every: 10m
+
+openrouter:
+  key_enc: xs3nQ/5V9pKcz4o1D7pF3hXES6gV04q6IS1EYSyLRUBF+WjP3BREX7YOpSivfkdkPPXue0VAmSyVCps9k5wZtAlcvypepM8pY2nofu63YYw=
+  base_url: https://openrouter.ai/api/v1
+  model: qwen/qwen3-coder:free
+  timeout: 1m

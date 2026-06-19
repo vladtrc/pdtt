@@ -1,0 +1,16 @@
+[Unit]
+Description=pdtt web playground
+After=network.target mysql.service
+Wants=mysql.service
+
+[Service]
+Type=simple
+ExecStart=/opt/pdtt/app -config /opt/pdtt/config.yaml -secret /opt/pdtt/.secret
+Restart=on-failure
+RestartSec=5
+User=www-data
+WorkingDirectory=/opt/pdtt
+# Ensure data_dir parent exists and is writable by www-data (videos/, work/ under /opt/pdtt/data)
+
+[Install]
+WantedBy=multi-user.target

@@ -1,4 +1,6 @@
 BIN := ./bin/pdtt
+WEB_BIN := ./bin/pdttweb
+TEMPL := github.com/a-h/templ/cmd/templ
 FPS ?= 30
 W ?= 960
 H ?= 540
@@ -12,7 +14,7 @@ EXAMPLES := $(notdir $(wildcard examples/*))
 
 # NB: render-%/ref-% are intentionally NOT .PHONY — GNU Make skips pattern-rule
 # search for phony targets, and there is no file by those names anyway.
-.PHONY: all build tools format lint fmt render-all ref render example clean
+.PHONY: all build web-build web-generate web-run tools format lint fmt render-all ref render example clean
 
 # default: build once, then render every example's res/ in PARALLEL.
 all:
@@ -24,6 +26,22 @@ render-all: $(addprefix render-,$(EXAMPLES))
 build:
 	mkdir -p ./bin
 	go build -o $(BIN) ./cmd/pdtt
+
+# regenerate templ views (internal/web/views_templ.go) from .templ sources.
+# templ is a tool dependency (see `tool` directive in go.mod).
+web-generate:
+	go tool $(TEMPL) generate
+
+# build the web-server entrypoint (same repo, different main).
+# views_templ.go is checked in, so this does not force a regenerate.
+web-build:
+	mkdir -p ./bin
+	go build -o $(WEB_BIN) ./cmd/pdttweb
+
+# run the web server locally against the checked-in config + secret
+web-run: web-build
+	@mkdir -p data/videos data/work
+	$(WEB_BIN) -config config.yaml -secret utils/secret/.secret
 
 tools:
 	go install mvdan.cc/gofumpt@latest

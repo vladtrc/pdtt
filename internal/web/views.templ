@@ -1,0 +1,682 @@
+package web
+
+const defaultScenePlaceholder = `scene shape_morph
+
+square s:
+  at: [0, 0]
+  side: 2
+  stroke: color.white
+
+| 1s | s{draw: 0} -> s
+`
+
+templ IndexPage(status renderStatusData, llmDocs string) {
+	<!DOCTYPE html>
+	<html lang="en" data-theme="dark">
+		<head>
+			<meta charset="UTF-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+			<title>pdtt playground</title>
+			<link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css"/>
+			<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+			<script src="https://unpkg.com/htmx.org@4.0.0-beta4/dist/htmx.min.js"></script>
+			<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+			<style>
+				[x-cloak] {
+					display: none !important;
+				}
+				.htmx-request .htmx-placeholder {
+					display: none;
+				}
+			</style>
+			<script>
+				window.pdttGenerateBusy = () => {
+					const data = document.body?._x_dataStack?.[0];
+					return data?.aiBusy === true;
+				};
+
+				window.pdttCopyFrom = window.pdttCopyFrom || function(button, name) {
+					const source = button.closest("[data-copy-card]")?.querySelector('[data-copy-source="' + name + '"]');
+					const text = source?.textContent || "";
+					const done = () => {
+						const previous = button.textContent;
+						button.textContent = "copied";
+						setTimeout(() => { button.textContent = previous; }, 1200);
+					};
+					if (navigator.clipboard?.writeText) {
+						navigator.clipboard.writeText(text).then(done);
+						return;
+					}
+					const textarea = document.createElement("textarea");
+					textarea.value = text;
+					textarea.style.position = "fixed";
+					textarea.style.left = "-9999px";
+					document.body.appendChild(textarea);
+					textarea.focus();
+					textarea.select();
+					document.execCommand("copy");
+					textarea.remove();
+					done();
+				};
+
+				document.addEventListener("alpine:init", () => {
+					Alpine.data("renderPage", (initialServerBusy, initialRenderStage, initialRenderDetail, initialRenderElapsed) => ({
+						busy: false,
+						aiBusy: false,
+						serverBusy: initialServerBusy,
+						renderStage: initialRenderStage,
+						renderDetail: initialRenderDetail,
+						renderElapsed: initialRenderElapsed,
+						generateStage: "",
+						generateDetail: "",
+						generateStartedAt: null,
+						generateElapsedSeconds: 0,
+						generateTimer: null,
+						freePromptOpen: false,
+						pipelineTitle: initialServerBusy ? "Render already running" : "Ready",
+						pipelineDetail: initialServerBusy ? initialRenderDetail : "Describe a scene, generate PDTT, then render it when ready.",
+
+						requestElement(event) {
+							return event.detail?.ctx?.sourceElement || event.detail?.ctx?.request?.elt || event.detail?.elt || event.target;
+						},
+
+						responseStatus(event) {
+							return event.detail?.ctx?.response?.status || event.detail?.xhr?.status || 0;
+						},
+
+						beforeRequest(event) {
+							const element = this.requestElement(event);
+							if (element?.id === "render-form") {
+								this.busy = true;
+								this.pipelineTitle = this.aiBusy ? "2/3 Sending generated scene to renderer" : "Sending scene to renderer";
+								this.pipelineDetail = "The pdtt scene was submitted. Waiting for the render server to start.";
+							}
+							if (element?.id === "generate-form") {
+								this.aiBusy = true;
+								this.generateStage = "sending prompt";
+								this.generateDetail = "Opening external LLM request.";
+								this.startGenerateTimer();
+								this.pipelineTitle = "AI: sending prompt";
+								this.pipelineDetail = this.generateDetail;
+							}
+						},
+
+						beforeSwap(event) {
+							if (this.responseStatus(event) >= 400 && "shouldSwap" in event.detail) {
+								event.detail.shouldSwap = true;
+							}
+						},
+
+						afterRequest(event) {
+							const element = this.requestElement(event);
+							const failed = this.responseStatus(event) >= 400;
+							if (element?.id === "render-form") {
+								this.busy = false;
+								this.pipelineTitle = failed ? "Render failed" : "3/3 Render completed";
+								this.pipelineDetail = failed ? "The render server returned an error. Details are shown in the output." : "MP4 is ready and shown in the output.";
+							}
+							if (element?.id === "generate-form") {
+								this.aiBusy = false;
+								this.stopGenerateTimer();
+								if (failed) {
+									this.pipelineTitle = "AI generation failed";
+									this.pipelineDetail = "The AI request returned an error. Details are shown below the prompt.";
+								} else if (!this.busy) {
+									this.pipelineTitle = "AI generated pdtt";
+									this.pipelineDetail = "The scene was inserted into the editor. Press render when ready.";
+								}
+							}
+						},
+
+						updateGenerationStatus(event) {
+							if (!event.detail.running) return;
+							this.generateStage = event.detail.stage;
+							this.generateDetail = event.detail.detail;
+							if (this.aiBusy) {
+								this.pipelineTitle = "AI: " + event.detail.stage;
+								this.pipelineDetail = event.detail.detail;
+							}
+						},
+
+						updateServerStatus(event) {
+							this.serverBusy = event.detail.busy;
+							this.renderStage = event.detail.stage;
+							this.renderDetail = event.detail.detail;
+							this.renderElapsed = event.detail.elapsed || "";
+							if (event.detail.busy) {
+								this.pipelineTitle = "Rendering: " + this.renderStageLabel();
+								this.pipelineDetail = event.detail.detail;
+							}
+						},
+
+						renderStageLabel() {
+							return this.renderStage + (this.renderElapsed ? " · " + this.renderElapsed : "");
+						},
+
+						startGenerateTimer() {
+							this.stopGenerateTimer();
+							this.generateStartedAt = Date.now();
+							this.generateElapsedSeconds = 0;
+							this.generateTimer = setInterval(() => {
+								this.generateElapsedSeconds = Math.floor((Date.now() - this.generateStartedAt) / 1000);
+							}, 1000);
+						},
+
+						stopGenerateTimer() {
+							if (this.generateTimer) clearInterval(this.generateTimer);
+							this.generateTimer = null;
+							this.generateStartedAt = null;
+							this.generateElapsedSeconds = 0;
+						},
+
+						generateElapsedLabel() {
+							const seconds = this.generateElapsedSeconds;
+							const mins = Math.floor(seconds / 60);
+							const secs = String(seconds % 60).padStart(2, "0");
+							return mins + ":" + secs;
+						},
+
+						generateButtonText() {
+							if (!this.aiBusy) return "generate";
+							const status = this.generateDetail || this.generateStage || "Waiting for generated pdtt scene...";
+							return this.generateElapsedLabel() + " · " + status;
+						},
+
+					}));
+				});
+			</script>
+		</head>
+		<body
+			class="min-h-screen bg-base-300 flex flex-col items-center p-6"
+			x-data={ alpineRenderPage(status) }
+			x-on:generation-status.window="updateGenerationStatus($event)"
+			x-on:server-status.window="updateServerStatus($event)"
+		>
+			<div class="w-full max-w-5xl flex flex-col gap-6">
+				<header class="grid grid-cols-1 sm:grid-cols-3 items-start gap-3">
+					<div class="justify-self-start" data-copy-card>
+						<pre class="hidden" data-copy-source="docs">{ llmDocs }</pre>
+						<button
+							type="button"
+							class="btn btn-xs btn-ghost normal-case"
+							onclick="pdttCopyFrom(this, 'docs')"
+							title="Copy PDTT LLM docs"
+						>
+							LLM docs
+						</button>
+					</div>
+					<h1 class="text-4xl font-bold text-primary text-center">pdtt playground</h1>
+					<div class="justify-self-end">
+						@PublicRenderStatus(status)
+					</div>
+					@PublicGenerateStatus(generateStatusData{})
+				</header>
+				<div class="flex flex-col lg:flex-row gap-6">
+					<div class="flex-1 flex flex-col gap-3">
+						<form
+							id="render-form"
+							hx-post="/render"
+							hx-target="#output"
+							hx-swap="innerHTML"
+							hx-indicator="#render-form, #output"
+							hx-disable="find textarea"
+							x-on:htmx:before:request="beforeRequest($event)"
+							x-on:htmx:before:swap="beforeSwap($event)"
+							x-on:htmx:after:request="afterRequest($event)"
+							class="flex flex-col gap-3"
+						>
+							<label class="label text-sm font-semibold text-base-content/80">pdtt scene</label>
+							<textarea
+								id="scene-input"
+								name="scene"
+								class="textarea textarea-bordered bg-base-200 font-mono text-sm h-96 resize-none w-full"
+								placeholder={ defaultScenePlaceholder }
+								spellcheck="false"
+							></textarea>
+							<button type="submit" class="btn btn-primary w-full" x-bind:disabled="busy || serverBusy">
+								<span
+									class="loading loading-spinner loading-sm"
+									x-cloak
+									x-show="busy"
+								></span>
+								<span x-text="busy ? 'rendering: ' + renderStageLabel() : (serverBusy ? 'server busy: ' + renderStageLabel() : 'render')">render</span>
+							</button>
+						</form>
+						<form
+							id="generate-form"
+							hx-post="/generate"
+							hx-target="#prompt-output"
+							hx-swap="innerHTML"
+							hx-indicator="#generate-form, #prompt-output"
+							hx-disable="find textarea, find button"
+							x-on:htmx:before:request="beforeRequest($event)"
+							x-on:htmx:before:swap="beforeSwap($event)"
+							x-on:htmx:after:request="afterRequest($event)"
+							class="flex flex-col gap-3"
+						>
+							<button
+								type="button"
+								class="label text-sm font-semibold text-base-content/80 justify-start gap-2 p-0 w-fit cursor-pointer"
+								x-on:click="freePromptOpen = !freePromptOpen"
+								x-bind:aria-expanded="freePromptOpen"
+							>
+								<span
+									class="inline-block text-xs transition-transform"
+									x-bind:class="freePromptOpen ? 'rotate-90' : ''"
+									aria-hidden="true"
+								>
+									▶
+								</span>
+								<span>free prompt</span>
+							</button>
+							<div class="flex flex-col gap-3" x-cloak x-show="freePromptOpen">
+								<textarea
+									name="prompt"
+									class="textarea textarea-bordered bg-base-200 text-sm h-28 resize-none w-full"
+									placeholder="нарисуй параболу и объясни, как меняется y = x²"
+									spellcheck="true"
+								></textarea>
+								<button type="submit" class="btn btn-secondary w-full h-auto min-h-12 whitespace-normal normal-case" x-bind:disabled="aiBusy">
+									<span
+										class="loading loading-spinner loading-sm"
+										x-cloak
+										x-show="aiBusy"
+									></span>
+									<span x-text="generateButtonText()">generate</span>
+								</button>
+								<div id="prompt-output" class="min-h-10 text-sm text-base-content/70">
+									<span class="htmx-placeholder" x-show="!aiBusy">describe a scene in natural language</span>
+								</div>
+							</div>
+						</form>
+					</div>
+					<div class="flex-1 flex flex-col gap-3">
+						<label class="label text-sm font-semibold text-base-content/80">output</label>
+						<div
+							id="output"
+							class="bg-base-200 rounded-box border border-base-content/10 aspect-square w-full overflow-hidden flex items-center justify-center text-base-content/30"
+						>
+							<div class="htmx-placeholder text-center px-6" x-show="!busy && !serverBusy">
+								<div>result will appear here</div>
+							</div>
+							<div class="text-center px-6 flex flex-col items-center gap-3" x-cloak x-show="busy || serverBusy">
+								<span class="loading loading-spinner loading-lg"></span>
+								<div>
+									<div class="font-semibold text-base-content/80" x-text="pipelineTitle">Preparing...</div>
+									<div class="text-sm text-base-content/50" x-text="pipelineDetail">Waiting for status...</div>
+								</div>
+							</div>
+						</div>
+					</div>
+				</div>
+				<footer class="text-center text-xs text-base-content/30">
+					<a
+						href="https://t.me/contextrot"
+						target="_blank"
+						rel="noopener noreferrer"
+						class="hover:text-base-content/50 hover:underline"
+					>
+						t.me/contextrot
+					</a>
+				</footer>
+			</div>
+		</body>
+	</html>
+}
+
+templ PublicRenderStatus(status renderStatusData) {
+	<div
+		id="server-status"
+		class="text-sm"
+		hx-get="/render-status"
+		hx-trigger="every 2s"
+		hx-target="this"
+		hx-swap="outerHTML"
+		x-init={ alpineServerStatusInit(status) }
+	>
+		if status.Busy {
+			<div class="alert alert-warning py-2 px-4">
+				<span>server is busy · { status.Stage }{ renderElapsedSuffix(status.Elapsed) }</span>
+			</div>
+		} else {
+			<div class="alert alert-success py-2 px-4">
+				<span>server is ready</span>
+			</div>
+		}
+	</div>
+}
+
+templ PublicGenerateStatus(status generateStatusData) {
+	<div
+		id="generate-status"
+		class="hidden"
+		hx-get="/generate-status"
+		hx-trigger="every 1s [pdttGenerateBusy()]"
+		hx-target="this"
+		hx-swap="outerHTML"
+		x-init={ alpineGenerateStatusInit(status) }
+	></div>
+}
+
+templ RenderCompleted(videoURL string) {
+	<div class="h-full w-full">
+		<video class="h-full w-full object-contain" src={ videoURL } autoplay loop muted playsinline controls></video>
+	</div>
+}
+
+templ AdminPage(data adminPageData) {
+	<!DOCTYPE html>
+	<html lang="en" data-theme="dark">
+		<head>
+			<meta charset="UTF-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+			<title>pdtt playground - admin</title>
+			<link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css"/>
+			<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+			<script src="https://unpkg.com/htmx.org@4.0.0-beta4/dist/htmx.min.js"></script>
+			<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+		</head>
+		<body class="min-h-screen bg-base-300 p-6">
+			<div
+				class="max-w-7xl mx-auto flex flex-col gap-6"
+				data-render-version={ data.RenderVersion }
+				x-data
+				hx-get={ "?render_version=" + data.RenderVersion }
+				hx-trigger="load delay:5s, every 5s"
+				hx-target="body"
+				hx-swap="outerHTML"
+			>
+				<header>
+					<h1 class="text-3xl font-bold text-primary">pdttweb admin</h1>
+					<p class="text-base-content/60 text-sm mt-1">
+						auto-refreshes every 5s · { data.Now }
+					</p>
+					@AdminNav(data.Secret, data.Active)
+				</header>
+				<div class="stats shadow bg-base-200">
+					<div class="stat">
+						<div class="stat-title">render server</div>
+						if data.Busy {
+							<div class="stat-value text-warning">busy</div>
+							<div class="stat-desc">new renders get a try-later error</div>
+						} else {
+							<div class="stat-value text-success">idle</div>
+							<div class="stat-desc">ready for one render</div>
+						}
+					</div>
+				</div>
+				<div>
+					<h2 class="text-xl font-semibold mb-3">Renders</h2>
+					<div class="overflow-x-auto rounded-box border border-base-content/10 bg-base-200">
+						<table class="table table-sm">
+							<thead>
+								<tr>
+									<th>id</th>
+									<th>status</th>
+									<th>stage</th>
+									<th>created</th>
+									<th>started</th>
+									<th>done</th>
+									<th>elapsed</th>
+									<th>duration</th>
+									<th>preview</th>
+									<th>video</th>
+									<th>error</th>
+								</tr>
+							</thead>
+							<tbody>
+								for _, log := range data.Logs {
+									<tr>
+										<td class="font-mono text-xs">{ log.ID }</td>
+										<td>{ log.Status }</td>
+										<td>{ log.Stage }</td>
+										<td class="text-xs">{ log.CreatedAt }</td>
+										<td class="text-xs">{ log.StartedAt }</td>
+										<td class="text-xs">{ log.DoneAt }</td>
+										<td>{ log.Elapsed }</td>
+										<td>{ log.Duration }</td>
+										<td class="w-44">
+											if log.VideoURL != "" {
+												<video class="w-40 rounded-box bg-base-300" src={ log.VideoURL } muted loop playsinline preload="metadata" controls></video>
+											} else {
+												<span class="text-xs text-base-content/50">—</span>
+											}
+										</td>
+										<td class="text-xs">
+											if log.VideoURL != "" {
+												<a class="link" href={ log.VideoURL }>{ log.VideoSizeHuman }</a>
+											} else {
+												<span>{ log.VideoSizeHuman }</span>
+											}
+										</td>
+										<td class="text-xs text-error max-w-xs truncate">{ log.Error }</td>
+									</tr>
+								}
+							</tbody>
+						</table>
+					</div>
+				</div>
+			</div>
+		</body>
+	</html>
+}
+
+templ AdminExternalPage(data adminExternalPageData) {
+	<!DOCTYPE html>
+	<html lang="en" data-theme="dark">
+		<head>
+			<meta charset="UTF-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+			<title>pdtt playground - external requests</title>
+			<link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css"/>
+			<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+			<script src="https://unpkg.com/htmx.org@4.0.0-beta4/dist/htmx.min.js"></script>
+		</head>
+		<body class="min-h-screen bg-base-300 p-6">
+			<div
+				class="max-w-7xl mx-auto flex flex-col gap-6"
+				hx-get=""
+				hx-trigger="load delay:5s, every 5s"
+				hx-target="body"
+				hx-swap="outerHTML"
+			>
+				<header>
+					<h1 class="text-3xl font-bold text-primary">External LLM requests</h1>
+					<p class="text-base-content/60 text-sm mt-1">
+						raw prompts, model replies, extracted PDTT and validation errors · { data.Now }
+					</p>
+					@AdminNav(data.Secret, data.Active)
+				</header>
+				<div class="flex flex-col gap-4">
+					for _, gen := range data.Generations {
+						<details class="collapse collapse-arrow bg-base-200 border border-base-content/10" open?={ gen.Status == "failed" }>
+							<summary class="collapse-title">
+								<div class="flex flex-wrap items-center gap-3">
+									<span class="font-mono text-xs">{ gen.ID }</span>
+									<span class="badge">{ gen.Status }</span>
+									<span class="text-xs text-base-content/60">{ gen.Model }</span>
+									<span class="text-xs">attempts: { gen.AttemptsCount }</span>
+									<span class="text-xs">created: { gen.CreatedAt }</span>
+									<span class="text-xs">duration: { gen.Duration }</span>
+								</div>
+							</summary>
+							<div class="collapse-content flex flex-col gap-4">
+								<div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+									<div>
+										<div class="text-xs uppercase text-base-content/50 mb-1">user prompt</div>
+										<pre class="bg-base-300 rounded-box p-3 text-xs whitespace-pre-wrap overflow-x-auto">{ gen.Prompt }</pre>
+									</div>
+									<div>
+										<div class="text-xs uppercase text-base-content/50 mb-1">final error</div>
+										<pre class="bg-base-300 rounded-box p-3 text-xs text-error whitespace-pre-wrap overflow-x-auto">{ gen.Error }</pre>
+									</div>
+									if gen.LastValidationError != "" {
+										<div>
+											<div class="text-xs uppercase text-base-content/50 mb-1">last validation error</div>
+											<pre class="bg-base-300 rounded-box p-3 text-xs text-warning whitespace-pre-wrap overflow-x-auto">{ gen.LastValidationError }</pre>
+										</div>
+									}
+									if gen.LastOpenRouterError != "" {
+										<div>
+											<div class="text-xs uppercase text-base-content/50 mb-1">last OpenRouter error</div>
+											<pre class="bg-base-300 rounded-box p-3 text-xs text-error whitespace-pre-wrap overflow-x-auto">{ gen.LastOpenRouterError }</pre>
+										</div>
+									}
+								</div>
+								for _, attempt := range gen.Attempts {
+									<details class="collapse collapse-arrow bg-base-300 border border-base-content/10">
+										<summary class="collapse-title text-sm">
+											attempt { attempt.Attempt } · { attempt.CreatedAt }
+											if attempt.ValidationError != "" {
+												<span class="badge badge-warning ml-2">validation failed</span>
+											}
+											if attempt.OpenRouterError != "" {
+												<span class="badge badge-error ml-2">OpenRouter failed</span>
+											}
+										</summary>
+										<div class="collapse-content grid grid-cols-1 xl:grid-cols-2 gap-4">
+											<div>
+												<div class="text-xs uppercase text-base-content/50 mb-1">request messages</div>
+												<pre class="bg-base-200 rounded-box p-3 text-xs whitespace-pre-wrap overflow-x-auto">{ attempt.RequestMessages }</pre>
+											</div>
+											<div>
+												<div class="text-xs uppercase text-base-content/50 mb-1">raw response</div>
+												<pre class="bg-base-200 rounded-box p-3 text-xs whitespace-pre-wrap overflow-x-auto">{ attempt.ResponseContent }</pre>
+											</div>
+											<div>
+												<div class="text-xs uppercase text-base-content/50 mb-1">extracted PDTT</div>
+												<pre class="bg-base-200 rounded-box p-3 text-xs whitespace-pre-wrap overflow-x-auto">{ attempt.ExtractedScene }</pre>
+											</div>
+											<div>
+												<div class="text-xs uppercase text-base-content/50 mb-1">errors</div>
+												<pre class="bg-base-200 rounded-box p-3 text-xs text-error whitespace-pre-wrap overflow-x-auto">{ attempt.ValidationError }{ attempt.OpenRouterError }</pre>
+											</div>
+										</div>
+									</details>
+								}
+								if gen.Scene != "" {
+									<div>
+										<div class="text-xs uppercase text-base-content/50 mb-1">final generated PDTT</div>
+										<pre class="bg-base-300 rounded-box p-3 text-xs whitespace-pre-wrap overflow-x-auto">{ gen.Scene }</pre>
+									</div>
+								}
+							</div>
+						</details>
+					}
+				</div>
+			</div>
+		</body>
+	</html>
+}
+
+templ AdminGenerationsPage(data adminGenerationsPageData) {
+	<!DOCTYPE html>
+	<html lang="en" data-theme="dark">
+		<head>
+			<meta charset="UTF-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+			<title>pdtt playground - generations</title>
+			<link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css"/>
+			<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+			<script src="https://unpkg.com/htmx.org@4.0.0-beta4/dist/htmx.min.js"></script>
+		</head>
+		<body class="min-h-screen bg-base-300 p-6">
+			<div
+				class="max-w-7xl mx-auto flex flex-col gap-6"
+				hx-get=""
+				hx-trigger="load delay:5s, every 5s"
+				hx-target="body"
+				hx-swap="outerHTML"
+			>
+				<header>
+					<h1 class="text-3xl font-bold text-primary">Generations</h1>
+					<p class="text-base-content/60 text-sm mt-1">
+						all logged AI generations · duration, text, sizes and errors · { data.Now }
+					</p>
+					@AdminNav(data.Secret, data.Active)
+				</header>
+				<div class="overflow-x-auto rounded-box border border-base-content/10 bg-base-200">
+					<table class="table table-sm">
+						<thead>
+							<tr>
+								<th>id</th>
+								<th>status</th>
+								<th>model</th>
+								<th>created</th>
+								<th>done</th>
+								<th>duration</th>
+								<th>attempts</th>
+								<th>prompt</th>
+								<th>prompt size</th>
+								<th>scene</th>
+								<th>scene size</th>
+								<th>error</th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, gen := range data.Generations {
+								<tr>
+									<td class="font-mono text-xs">{ gen.ID }</td>
+									<td><span class="badge badge-sm">{ gen.Status }</span></td>
+									<td class="text-xs max-w-48 truncate">{ gen.Model }</td>
+									<td class="text-xs">{ gen.CreatedAt }</td>
+									<td class="text-xs">{ gen.DoneAt }</td>
+									<td>{ gen.Duration }</td>
+									<td>{ gen.Attempts }</td>
+									<td class="text-xs max-w-xs truncate">{ gen.PromptPreview }</td>
+									<td class="text-xs">{ gen.PromptSize }</td>
+									<td class="text-xs max-w-xs truncate">{ gen.ScenePreview }</td>
+									<td class="text-xs">{ gen.SceneSize }</td>
+									<td class="text-xs text-error max-w-xs truncate">{ gen.Error }{ gen.ValidationError }{ gen.OpenRouterError }</td>
+								</tr>
+								<tr>
+									<td colspan="12" class="bg-base-300">
+										<details class="collapse collapse-arrow">
+											<summary class="collapse-title text-sm py-2 min-h-0">details</summary>
+											<div class="collapse-content grid grid-cols-1 xl:grid-cols-2 gap-4">
+												<div>
+													<div class="text-xs uppercase text-base-content/50 mb-1">user prompt · { gen.PromptSize }</div>
+													<pre class="bg-base-200 rounded-box p-3 text-xs whitespace-pre-wrap overflow-x-auto">{ gen.Prompt }</pre>
+												</div>
+												<div>
+													<div class="text-xs uppercase text-base-content/50 mb-1">generated PDTT · { gen.SceneSize }</div>
+													<pre class="bg-base-200 rounded-box p-3 text-xs whitespace-pre-wrap overflow-x-auto">{ gen.Scene }</pre>
+												</div>
+												if gen.Error != "" {
+													<div>
+														<div class="text-xs uppercase text-base-content/50 mb-1">final error</div>
+														<pre class="bg-base-200 rounded-box p-3 text-xs text-error whitespace-pre-wrap overflow-x-auto">{ gen.Error }</pre>
+													</div>
+												}
+												if gen.ValidationError != "" {
+													<div>
+														<div class="text-xs uppercase text-base-content/50 mb-1">last validation error</div>
+														<pre class="bg-base-200 rounded-box p-3 text-xs text-warning whitespace-pre-wrap overflow-x-auto">{ gen.ValidationError }</pre>
+													</div>
+												}
+												if gen.OpenRouterError != "" {
+													<div>
+														<div class="text-xs uppercase text-base-content/50 mb-1">last OpenRouter error</div>
+														<pre class="bg-base-200 rounded-box p-3 text-xs text-error whitespace-pre-wrap overflow-x-auto">{ gen.OpenRouterError }</pre>
+													</div>
+												}
+											</div>
+										</details>
+									</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+			</div>
+		</body>
+	</html>
+}
+
+templ AdminNav(secret string, active string) {
+	<div class="tabs tabs-boxed bg-base-200 mt-4 w-fit">
+		<a class={ adminNavClass(active, "renders") } href={ "/admin/" + secret + "/renders" }>renders</a>
+		<a class={ adminNavClass(active, "generations") } href={ "/admin/" + secret + "/generations" }>generations</a>
+		<a class={ adminNavClass(active, "external") } href={ "/admin/" + secret + "/external" }>external LLM requests</a>
+	</div>
+}
