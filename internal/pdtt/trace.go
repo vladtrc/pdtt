@@ -15,7 +15,7 @@ type Tracer struct {
 
 func NewTracer(outputDir string) (*Tracer, error) {
 	path := filepath.Join(outputDir, "traces.jsonl")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -38,20 +38,4 @@ func (t *Tracer) Info(msg string, args ...any) {
 
 func durMs(d time.Duration) float64 {
 	return float64(d.Microseconds()) / 1000
-}
-
-// StepBreakdown records where Step spends time on one frame.
-type StepBreakdown struct {
-	EventsMs    float64
-	LiveInitMs  float64
-	AnimsMs     float64
-	LiveMidMs   float64
-	LiveFinalMs float64
-	PostsMs     float64
-	LivePostMs  float64
-	RatesMs     float64
-
-	RefreshCalls int
-	GlobalEvals  int
-	FieldEvals   int
 }

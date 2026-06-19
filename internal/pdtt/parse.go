@@ -149,31 +149,28 @@ func parseDurToken(tok string) (float64, bool, error) {
 	}
 }
 
-// parseCtorRecordHeader parses constructor-style record headers such as
-// text("a) b") label: using balanced parentheses inside the argument list.
-func parseCtorRecordHeader(trimmed string) (typ, argText, name string, ok bool) {
+// isCtorRecordHeader reports whether trimmed is a (no-longer-supported)
+// constructor-style record header such as `text("a) b") label:`, using
+// balanced parentheses so the argument list may contain a closing paren.
+func isCtorRecordHeader(trimmed string) bool {
 	i := strings.IndexByte(trimmed, '(')
 	if i <= 0 {
-		return "", "", "", false
+		return false
 	}
-	typ = trimmed[:i]
+	typ := trimmed[:i]
 	if typ != "text" && typ != "typst" {
-		return "", "", "", false
+		return false
 	}
 	close, found := balancedClosingParen(trimmed, i)
 	if !found {
-		return "", "", "", false
+		return false
 	}
-	argText = strings.TrimSpace(trimmed[i+1 : close])
 	rest := strings.TrimSpace(trimmed[close+1:])
 	if !strings.HasSuffix(rest, ":") {
-		return "", "", "", false
+		return false
 	}
-	name = strings.TrimSpace(strings.TrimSuffix(rest, ":"))
-	if name == "" || strings.ContainsAny(name, " \t(") {
-		return "", "", "", false
-	}
-	return typ, argText, name, true
+	name := strings.TrimSpace(strings.TrimSuffix(rest, ":"))
+	return name != "" && !strings.ContainsAny(name, " \t(")
 }
 
 // parseFamilyHeaderShape parses NAME[domainExpr as bindVar]: using
@@ -295,14 +292,16 @@ func balancedClosingParen(s string, open int) (close int, ok bool) {
 	return balancedClosingDelimiter(s, open, '(', ')')
 }
 
-func parseCtorRecord(trimmed string, ln int) (*RecordStmt, error) {
-	if _, _, _, ok := parseCtorRecordHeader(trimmed); ok {
-		return nil, fmt.Errorf(
+// ctorRecordError rejects the deprecated `text(...)`/`typst(...)` constructor
+// header syntax with a helpful message; it returns nil for any other line.
+func ctorRecordError(trimmed string, ln int) error {
+	if isCtorRecordHeader(trimmed) {
+		return fmt.Errorf(
 			"line %d: text/typst constructor syntax is not supported; declare `text name:` or `typst name:` with a `text:` field",
 			ln,
 		)
 	}
-	return nil, nil
+	return nil
 }
 
 // looksLikeFlatFieldLine reports whether a column-0 line resembles a record
@@ -321,7 +320,7 @@ func looksLikeFlatFieldLine(trimmed string) bool {
 	if _, _, _, ok := parseFamilyHeaderShape(s); ok {
 		return false
 	}
-	if _, _, _, ok := parseCtorRecordHeader(s); ok {
+	if isCtorRecordHeader(s) {
 		return false
 	}
 	return colonBindRe.MatchString(s)
@@ -416,10 +415,8 @@ func ParseFile(src string) ([]Stmt, error) {
 					return nil, err
 				} else if local != nil {
 					curFamily.Locals = append(curFamily.Locals, *local)
-				} else if rec, err := parseCtorRecord(trimmed, ln); err != nil {
+				} else if err := ctorRecordError(trimmed, ln); err != nil {
 					return nil, err
-				} else if rec != nil {
-					curFamilyMember = rec
 				} else if m := recordRe.FindStringSubmatch(trimmed); m != nil {
 					curFamilyMember = &RecordStmt{Type: m[1], Name: m[2], Line: ln}
 				} else {
@@ -433,10 +430,8 @@ func ParseFile(src string) ([]Stmt, error) {
 					return nil, err
 				} else if local != nil {
 					curFamily.Locals = append(curFamily.Locals, *local)
-				} else if rec, err := parseCtorRecord(trimmed, ln); err != nil {
+				} else if err := ctorRecordError(trimmed, ln); err != nil {
 					return nil, err
-				} else if rec != nil {
-					curFamilyMember = rec
 				} else if m := recordRe.FindStringSubmatch(trimmed); m != nil {
 					curFamilyMember = &RecordStmt{Type: m[1], Name: m[2], Line: ln}
 				} else {
@@ -528,11 +523,8 @@ func ParseFile(src string) ([]Stmt, error) {
 				}
 				continue
 			}
-			if rec, err := parseCtorRecord(trimmed, ln); err != nil {
+			if err := ctorRecordError(trimmed, ln); err != nil {
 				return nil, err
-			} else if rec != nil {
-				curRecord = rec
-				continue
 			}
 			if m := recordRe.FindStringSubmatch(trimmed); m != nil {
 				curRecord = &RecordStmt{Type: m[1], Name: m[2], Line: ln}

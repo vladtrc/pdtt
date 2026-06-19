@@ -5,20 +5,11 @@ import (
 	"crypto/cipher"
 	"encoding/base64"
 	"errors"
-	"os"
 	"strings"
 )
 
-// Decrypt decrypts an AES-256-CBC base64-encoded ciphertext using a
-// base64-encoded 48-byte secret (32 key + 16 IV) from the SECRET env var.
-func Decrypt(encoded string) (string, error) {
-	secretEnv := os.Getenv("SECRET")
-	if secretEnv == "" {
-		return "", errors.New("SECRET environment variable not set")
-	}
-	return DecryptWithKey(encoded, secretEnv)
-}
-
+// DecryptWithKey decrypts an AES-256-CBC base64-encoded ciphertext using a
+// base64-encoded 48-byte secret (32 key + 16 IV).
 func DecryptWithKey(encoded, secretB64 string) (string, error) {
 	secretBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(secretB64))
 	if err != nil {

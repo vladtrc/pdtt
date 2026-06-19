@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vladtrc/pdtt/pkg/render"
 	"github.com/vladtrc/pdtt/internal/config"
+	"github.com/vladtrc/pdtt/pkg/render"
 )
 
 func testRenderServer(t *testing.T, maxSceneBytes int64) *Server {
@@ -72,6 +72,36 @@ func TestHandleRenderSemanticErrorsReturn422(t *testing.T) {
 	srv.handleRender(rec, req)
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("oversized scene status = %d, want 422", rec.Code)
+	}
+}
+
+func TestHandleRenderErrorCardEscapesCompilerOutput(t *testing.T) {
+	srv := testRenderServer(t, 1024)
+	srv.renderScene = func(string, string) (*render.Result, error) {
+		return nil, errors.New("<bad & failed>")
+	}
+
+	req, rec := postRender(t, "scene=ok")
+	srv.handleRender(rec, req)
+	body := rec.Body.String()
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", rec.Code)
+	}
+	if !strings.Contains(body, "Compilation failed") {
+		t.Fatalf("body should include render error title: %s", body)
+	}
+	if !strings.Contains(body, `data-copy-source="error"`) {
+		t.Fatalf("body should include compiler-error copy source: %s", body)
+	}
+	if !strings.Contains(body, "&lt;bad &amp; failed&gt;") {
+		t.Fatalf("body should escape compiler output: %s", body)
+	}
+	if strings.Contains(body, "<bad & failed>") {
+		t.Fatalf("body should not include raw compiler output: %s", body)
+	}
+	if !strings.Contains(body, "copy LLM docs") {
+		t.Fatalf("body should include docs copy action: %s", body)
 	}
 }
 
@@ -368,7 +398,7 @@ func TestServerCloseNilContextWaits(t *testing.T) {
 		close(finished)
 	}()
 
-	if err := s.Close(nil); err != nil {
+	if err := s.Close(context.Background()); err != nil {
 		t.Fatalf("Close(nil): %v", err)
 	}
 	select {

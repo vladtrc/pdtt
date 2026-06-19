@@ -1,4 +1,6 @@
 /bin/
+/pdtt
+/pdttweb
 frames/
 *.tmp
 examples/*/res*/

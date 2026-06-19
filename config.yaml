@@ -8,7 +8,6 @@ render_timeout: 3m
 retention: 24h
 max_scene_bytes: 1048576
 admin_secret: JkY7y7ic_i6xsh8qFCOHGQk3QQXYslQ2sfhMAkLvSxE
-lease_duration: 2m
 cleanup_every: 10m
 
 openrouter:

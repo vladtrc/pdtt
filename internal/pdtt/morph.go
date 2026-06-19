@@ -1,6 +1,9 @@
 package pdtt
 
-import "math"
+import (
+	"fmt"
+	"math"
+)
 
 // Morphing rests on one idea: a shape is a list of CLOSED loops of points, and
 // nothing else. Glyphs, their counters (holes), circles, polygons are already
@@ -225,4 +228,264 @@ func (ms morphRenderStyle) apply(e *Entity) {
 	e.MorphStrokeW = ms.StrokeW
 	e.MorphHasFill = ms.HasFill
 	e.MorphFill = ms.Fill
+}
+
+// morphAnim is the captured plan + run-time state for a single morph pair.
+// Lifting it out of the Start/Update closures gives morph an inspectable state
+// value and turns its per-frame logic into a pure step method — the typed-state
+// (01) and plan/run-split (04) seam, proven on the hardest verb first.
+type morphAnim struct {
+	// Plan: fixed when the morph is expanded.
+	rhs      Expr
+	srcOpRef Ref
+	srcPos   func() Vec
+	srcMove  *Entity // nil when the source is a group part
+
+	// Run-time: resolved and captured in start.
+	dst      *Entity
+	dstOpRef Ref
+	outline  bool
+	srcCtrs  [][]Vec
+	dstCtrs  [][]Vec
+	srcStyle shapeMorphStyle
+	dstStyle shapeMorphStyle
+
+	srcOp        float64 // source opacity at u=0
+	dstOp        float64 // destination opacity at u=0
+	offset       Vec     // srcPos - dst.at: the crossfade glide
+	srcOffset    Vec     // source's own offset at u=0
+	hasSrcOffset bool
+}
+
+// start resolves the destination and captures the values the step needs.
+func (m *morphAnim) start(a *Anim, rt *Runtime) error {
+	s := &Scope{rt: rt, binds: a.Binds}
+	dv, err := s.Eval(m.rhs)
+	if err != nil {
+		return fmt.Errorf("line %d: morph target: %v", a.Line, err)
+	}
+	switch x := dv.(type) {
+	case *Entity:
+		m.dst = x
+	case *Group:
+		if len(x.Items) == 1 {
+			m.dst = x.Items[0]
+		}
+	}
+	if m.dst == nil {
+		return fmt.Errorf("line %d: morph target is %T", a.Line, dv)
+	}
+	m.dstOpRef = FieldRef{E: m.dst, F: m.dst.field("opacity")}
+	if m.srcMove != nil {
+		m.srcMove.Active = true
+	}
+	dstWasActive := m.dst.Active
+	m.dst.Active = true
+	// The morph now owns the source's visibility: cancel any held post-tween
+	// that was pinning the source opacity, so the morph's fade-out at u>=1 sticks.
+	rt.clearPost(m.srcOpRef.Key())
+	m.outline = m.srcMove != nil && canOutline(m.srcMove.Type) && canOutline(m.dst.Type)
+	if m.outline {
+		sc := morphLoops(m.srcMove)
+		dc := morphLoops(m.dst)
+		if len(sc) == 0 || len(dc) == 0 {
+			m.outline = false
+		} else {
+			m.srcCtrs, m.dstCtrs = matchLoops(sc, dc, morphSamples)
+		}
+	}
+	if m.outline {
+		m.srcStyle = shapeStyleForMorph(m.srcMove)
+		m.dstStyle = shapeStyleForMorph(m.dst)
+		m.dstOpRef.Set(0.0)
+	}
+	dstStartOpacity, _ := asFloat(m.dstOpRef.Get())
+	if !dstWasActive {
+		dstStartOpacity = 0.0
+		m.dstOpRef.Set(0.0)
+	}
+	m.srcOp, _ = asFloat(m.srcOpRef.Get())
+	m.dstOp = dstStartOpacity
+	if !m.outline {
+		m.offset = m.srcPos().Sub(m.dst.fvec("at"))
+		if m.srcMove != nil {
+			m.srcOffset = m.srcMove.Offset
+			m.hasSrcOffset = true
+		}
+	}
+	return nil
+}
+
+// step applies the morph at interpolation parameter u. Pure: reads m, writes
+// refs/entities, no closure captures and no rt dependency.
+func (m *morphAnim) step(u float64) {
+	s0 := m.srcOp
+	if m.outline && m.srcMove != nil && len(m.srcCtrs) == len(m.dstCtrs) && len(m.srcCtrs) > 0 {
+		m.srcMove.MorphContours = lerpLoops(m.srcCtrs, m.dstCtrs, u)
+		morphStyleAt(m.srcStyle, m.dstStyle, u).apply(m.srcMove)
+		m.srcOpRef.Set(s0)
+		m.dstOpRef.Set(0.0)
+		if u >= 1 {
+			m.srcMove.MorphContours = nil
+			m.srcMove.MorphHasStroke = false
+			m.srcMove.MorphStrokeW = 0
+			m.srcMove.MorphHasFill = false
+			m.srcOpRef.Set(0.0)
+			m.srcMove.Active = false
+			m.dstOpRef.Set(1.0)
+			m.dst.Active = true
+		}
+		return
+	}
+	off := m.offset
+	m.srcOpRef.Set(lerp(s0, 0, u))
+	m.dstOpRef.Set(lerp(m.dstOp, 1, u))
+	m.dst.Offset = off.Mul(1 - u)
+	if m.srcMove != nil && m.hasSrcOffset {
+		m.srcMove.Offset = m.srcOffset.Sub(off.Mul(u))
+	}
+	if u >= 1 {
+		if m.srcMove != nil {
+			m.srcMove.Active = false
+		}
+		m.dst.Active = true
+	}
+}
+
+func (rt *Runtime) expandMorph(row Row, w winState, mk func(from, to float64, eb map[string]Value) *Anim) error {
+	binds := mk(0, 0, nil).Binds
+	srcEnts, srcParts, err := rt.verbSubjects(row.Op.LHS, binds)
+	if err != nil {
+		return fmt.Errorf("line %d: morph: %v", row.Line, err)
+	}
+	n := len(srcEnts) + len(srcParts)
+	rhs := row.Op.RHS
+
+	addPair := func(k int, srcE *Entity, srcP *PartState) {
+		it := ItVal{I: k, N: n}
+		if srcP != nil {
+			it.Val = srcP
+		} else {
+			it.Val = srcE
+			if iv, ok := srcE.It.(ItVal); ok {
+				it = ItVal{Val: iv.Val, I: k, N: n, Cols: iv.Cols}
+			}
+		}
+		from := w.from + float64(k)*w.stagger
+		a := mk(from, w.to, map[string]Value{"it": it})
+
+		m := &morphAnim{rhs: rhs}
+		if srcP != nil {
+			m.srcOpRef = PartOpacityRef{P: srcP}
+			m.srcPos = func() Vec { at, _, _ := partBox(srcP); return at }
+		} else {
+			e := srcE
+			m.srcMove = e
+			m.srcOpRef = FieldRef{E: e, F: e.field("opacity")}
+			m.srcPos = func() Vec { return e.fvec("at").Add(e.Offset) }
+		}
+
+		a.Targets = []Ref{m.srcOpRef}
+		a.state = m
+		a.Start = func(a *Anim, rt *Runtime) error { return a.state.(*morphAnim).start(a, rt) }
+		a.Update = func(a *Anim, rt *Runtime, u float64) { a.state.(*morphAnim).step(u) }
+		rt.Anims = append(rt.Anims, a)
+	}
+
+	for k, e := range srcEnts {
+		addPair(k, e, nil)
+	}
+	for k, p := range srcParts {
+		addPair(k+len(srcEnts), nil, p)
+	}
+	return nil
+}
+
+func isTextType(typ string) bool {
+	switch typ {
+	case "tex", "typst", "text", "decimal":
+		return true
+	}
+	return false
+}
+
+func canOutline(typ string) bool {
+	switch typ {
+	case "path", "dot", "tex", "typst", "text", "decimal":
+		return true
+	}
+	return false
+}
+
+// shapeStrokeWorldW is the stroke width (world units) the static renderer uses
+// for shape outlines (path/dot): see the 0.045*ppu line widths in
+// render.go. Text has no stroke, so its morph stroke width is 0 — mirroring
+// manim, where Text/MathTex have stroke_width=0 and Circle has stroke_width≈4.
+const shapeStrokeWorldW = 0.045
+
+type shapeMorphStyle struct {
+	EffectiveColor Color
+	FillColor      Color
+	StrokeA        float64
+	StrokeW        float64 // stroke width in world units (manim: stroke_width)
+	FillA          float64
+}
+
+func shapeStyleForMorph(e *Entity) shapeMorphStyle {
+	if isTextType(e.Type) {
+		col := entityColor(e)
+		return shapeMorphStyle{
+			EffectiveColor: col,
+			FillColor:      col,
+			StrokeA:        0,
+			StrokeW:        0,
+			FillA:          col.A,
+		}
+	}
+
+	var strokeCol Color
+	var strokeA float64
+	switch e.Type {
+	case "path", "dot":
+		strokeCol = fieldColor(e, "stroke.color", fieldColor(e, "stroke", namedColors["white"]))
+		strokeA = strokeCol.A
+	}
+
+	var fillCol Color
+	var fillA float64
+	switch e.Type {
+	case "dot":
+		fillCol = entityColor(e)
+		if f, ok := e.Fields["fill"]; ok && f.Val != nil {
+			if c, err := asColor(f.Val); err == nil {
+				fillCol = c
+			}
+		}
+		fillA = fillCol.A
+	case "path":
+		if c, ok := pathFillColor(e); ok {
+			fillCol = c
+			fillA = c.A
+		}
+	}
+
+	// EffectiveColor is the stroke RGB used when blending the morph outline.
+	// The fill is interpolated separately (FillColor/FillA), so the stroke
+	// must track the stroke color and never fall back to the fill — otherwise
+	// a stroked, filled target (e.g. WHITE stroke + PINK fill dot) drags the
+	// outline toward the fill mid-morph and then snaps back at u>=1.
+	eff := strokeCol
+	strokeW := shapeStrokeWorldW
+	if strokeA <= 0 {
+		// No stroke is drawn; RGB is irrelevant but keep a sane value.
+		eff = entityColor(e)
+		strokeW = 0
+	}
+	return shapeMorphStyle{
+		EffectiveColor: eff,
+		FillColor:      fillCol,
+		StrokeA:        strokeA,
+		StrokeW:        strokeW,
+		FillA:          fillA,
+	}
 }

@@ -10,15 +10,12 @@ import (
 	"time"
 )
 
-const advisoryLockName = "pdttweb_render_worker"
-
 type Store struct {
-	db            *sql.DB
-	leaseDuration time.Duration
-	workerID      string
+	db       *sql.DB
+	workerID string
 }
 
-func NewStore(db *sql.DB, leaseDuration time.Duration) (*Store, error) {
+func NewStore(db *sql.DB) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("db is required")
 	}
@@ -30,38 +27,19 @@ func NewStore(db *sql.DB, leaseDuration time.Duration) (*Store, error) {
 	if err := Migrate(ctx, db); err != nil {
 		return nil, err
 	}
-	return &Store{
-		db:            db,
-		leaseDuration: leaseDuration,
-		workerID:      newWorkerID(),
-	}, nil
-}
-
-func newWorkerID() string {
-	var b [8]byte
-	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
-}
-
-func (s *Store) WorkerID() string {
-	return s.workerID
-}
-
-func (s *Store) Create(ctx context.Context, scene string) (*Job, error) {
-	id, err := newJobID()
+	workerID, err := newWorkerID()
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now().UTC()
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO render_jobs (id, scene, status, stage, created_at)
-		VALUES (?, ?, ?, ?, ?)`,
-		id, scene, StatusQueued, StageQueued, now,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("insert job: %w", err)
+	return &Store{db: db, workerID: workerID}, nil
+}
+
+func newWorkerID() (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
 	}
-	return s.GetByID(ctx, id)
+	return hex.EncodeToString(b[:]), nil
 }
 
 func (s *Store) CreateRunning(ctx context.Context, scene string) (*Job, error) {
@@ -114,145 +92,6 @@ func (s *Store) GetByID(ctx context.Context, id string) (*Job, error) {
 		       COALESCE(lease_owner, ''), lease_expires_at
 		FROM render_jobs WHERE id = ?`, id)
 	return scanJob(row)
-}
-
-func (s *Store) StatusView(ctx context.Context, id string) (*StatusView, error) {
-	job, err := s.GetByID(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	pos, err := s.queuePosition(ctx, job)
-	if err != nil {
-		return nil, err
-	}
-	return job.toStatusView(pos), nil
-}
-
-func (s *Store) queuePosition(ctx context.Context, job *Job) (int, error) {
-	if job.Status != StatusQueued {
-		return 0, nil
-	}
-	var pos int
-	err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) + 1
-		FROM render_jobs
-		WHERE status = ? AND (created_at < ? OR (created_at = ? AND id < ?))`,
-		StatusQueued, job.CreatedAt, job.CreatedAt, job.ID,
-	).Scan(&pos)
-	if err != nil {
-		return 0, err
-	}
-	return pos, nil
-}
-
-func (s *Store) RecoverStale(ctx context.Context) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `
-		UPDATE render_jobs
-		SET status = ?, stage = ?, error_message = ?, completed_at = ?
-		WHERE status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at < ?`,
-		StatusFailed, StageFailed, "worker lease expired (stale running job recovered)",
-		time.Now().UTC(), StatusRunning, time.Now().UTC(),
-	)
-	if err != nil {
-		return 0, err
-	}
-	return res.RowsAffected()
-}
-
-func (s *Store) TryClaimNext(ctx context.Context) (*Job, error) {
-	conn, err := s.db.Conn(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-
-	var got int
-	if err := conn.QueryRowContext(ctx, `SELECT GET_LOCK(?, 0)`, advisoryLockName).Scan(&got); err != nil {
-		return nil, fmt.Errorf("get lock: %w", err)
-	}
-	if got != 1 {
-		return nil, nil
-	}
-	defer func() {
-		_, _ = conn.ExecContext(context.Background(), `SELECT RELEASE_LOCK(?)`, advisoryLockName)
-	}()
-
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE render_jobs
-		SET status = ?, stage = ?, error_message = ?, completed_at = ?
-		WHERE status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at < ?`,
-		StatusFailed, StageFailed, "worker lease expired (stale running job recovered)",
-		time.Now().UTC(), StatusRunning, time.Now().UTC(),
-	); err != nil {
-		return nil, err
-	}
-
-	var active int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM render_jobs WHERE status = ?`, StatusRunning,
-	).Scan(&active); err != nil {
-		return nil, err
-	}
-	if active > 0 {
-		return nil, nil
-	}
-
-	var id, scene string
-	var createdAt time.Time
-	err = tx.QueryRowContext(ctx, `
-		SELECT id, scene, created_at
-		FROM render_jobs
-		WHERE status = ?
-		ORDER BY created_at, id
-		LIMIT 1
-		FOR UPDATE`,
-		StatusQueued,
-	).Scan(&id, &scene, &createdAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	now := time.Now().UTC()
-	leaseUntil := now.Add(s.leaseDuration)
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE render_jobs
-		SET status = ?, stage = ?, started_at = ?, lease_owner = ?, lease_expires_at = ?
-		WHERE id = ?`,
-		StatusRunning, StageRenderingFrames, now, s.workerID, leaseUntil, id,
-	); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return s.GetByID(ctx, id)
-}
-
-func (s *Store) RenewLease(ctx context.Context, id string) error {
-	until := time.Now().UTC().Add(s.leaseDuration)
-	res, err := s.db.ExecContext(ctx, `
-		UPDATE render_jobs
-		SET lease_expires_at = ?
-		WHERE id = ? AND status = ? AND lease_owner = ?`,
-		until, id, StatusRunning, s.workerID,
-	)
-	if err != nil {
-		return err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return fmt.Errorf("lease renew rejected for job %s", id)
-	}
-	return nil
 }
 
 func (s *Store) SetStage(ctx context.Context, id, stage string) error {
@@ -324,7 +163,7 @@ func (s *Store) ListRecent(ctx context.Context, limit int) ([]*Job, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []*Job
 	for rows.Next() {
@@ -335,17 +174,6 @@ func (s *Store) ListRecent(ctx context.Context, limit int) ([]*Job, error) {
 		out = append(out, job)
 	}
 	return out, rows.Err()
-}
-
-func (s *Store) QueueStats(ctx context.Context) (queued, running int, err error) {
-	err = s.db.QueryRowContext(ctx, `
-		SELECT
-			COALESCE(SUM(status = ?), 0),
-			COALESCE(SUM(status = ?), 0)
-		FROM render_jobs`,
-		StatusQueued, StatusRunning,
-	).Scan(&queued, &running)
-	return
 }
 
 type ExpiredJob struct {
@@ -366,7 +194,7 @@ func (s *Store) ListExpired(ctx context.Context, before time.Time, limit int) ([
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []ExpiredJob
 	for rows.Next() {
@@ -436,25 +264,6 @@ func scanJobRows(rows *sql.Rows) (*Job, error) {
 	return &j, nil
 }
 
-func (j *Job) toStatusView(queuePos int) *StatusView {
-	v := &StatusView{
-		ID:          j.ID,
-		Status:      j.Status,
-		Stage:       j.Stage,
-		QueuePos:    queuePos,
-		Error:       j.ErrorMessage,
-		VideoSize:   j.VideoSize,
-		CreatedAt:   j.CreatedAt,
-		StartedAt:   j.StartedAt,
-		CompletedAt: j.CompletedAt,
-	}
-	if j.Status == StatusCompleted && j.VideoPath != "" {
-		v.VideoURL = "/video/" + j.ID
-	}
-	v.ElapsedSec = elapsedSeconds(j)
-	return v
-}
-
 func elapsedSeconds(j *Job) float64 {
 	end := time.Now().UTC()
 	if j.CompletedAt != nil {
@@ -464,17 +273,10 @@ func elapsedSeconds(j *Job) float64 {
 	if j.StartedAt != nil {
 		start = j.StartedAt.UTC()
 	}
-	if j.Status == StatusQueued {
-		start = j.CreatedAt.UTC()
-	}
 	if end.Before(start) {
 		return 0
 	}
 	return end.Sub(start).Seconds()
-}
-
-func (j *Job) AdminQueuePos(ctx context.Context, store *Store) (int, error) {
-	return store.queuePosition(ctx, j)
 }
 
 func (j *Job) ElapsedSeconds() float64 {

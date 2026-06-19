@@ -44,7 +44,6 @@ func (c *SceneCompiler) CompileStmts(stmts []Stmt) (*Runtime, error) {
 
 type RenderResult struct {
 	FramesDir string
-	FrameGlob string
 	FrameCnt  int
 }
 
@@ -79,47 +78,15 @@ func (r *FrameRenderer) Render(rt *Runtime, cfg Config, trace *Tracer) (*RenderR
 	var stepTotal, renderTotal, saveTotal time.Duration
 	var slowestFrame int
 	var slowestMs float64
-	var stepSum StepBreakdown
 
 	for k := 0; k < nFrames; k++ {
 		t := float64(k) / cfg.FPS
 
 		stepStart := time.Now()
-		prof := &StepBreakdown{}
-		if err := rt.stepAt(t, prof); err != nil {
+		if err := rt.Step(t); err != nil {
 			return nil, fmt.Errorf("t=%.2fs: %w", t, err)
 		}
 		stepDur := time.Since(stepStart)
-
-		stepSum.EventsMs += prof.EventsMs
-		stepSum.LiveInitMs += prof.LiveInitMs
-		stepSum.AnimsMs += prof.AnimsMs
-		stepSum.LiveMidMs += prof.LiveMidMs
-		stepSum.LiveFinalMs += prof.LiveFinalMs
-		stepSum.PostsMs += prof.PostsMs
-		stepSum.LivePostMs += prof.LivePostMs
-		stepSum.RatesMs += prof.RatesMs
-		stepSum.RefreshCalls += prof.RefreshCalls
-		stepSum.GlobalEvals += prof.GlobalEvals
-		stepSum.FieldEvals += prof.FieldEvals
-
-		if k == 0 {
-			trace.Info("step_breakdown",
-				"index", k,
-				"t_s", t,
-				"events_ms", prof.EventsMs,
-				"live_init_ms", prof.LiveInitMs,
-				"anims_ms", prof.AnimsMs,
-				"live_mid_ms", prof.LiveMidMs,
-				"live_final_ms", prof.LiveFinalMs,
-				"posts_ms", prof.PostsMs,
-				"live_post_ms", prof.LivePostMs,
-				"rates_ms", prof.RatesMs,
-				"refresh_calls", prof.RefreshCalls,
-				"global_evals", prof.GlobalEvals,
-				"field_evals", prof.FieldEvals,
-			)
-		}
 
 		renderStart := time.Now()
 		dc := renderer.Frame(rt)
@@ -132,12 +99,11 @@ func (r *FrameRenderer) Render(rt *Runtime, cfg Config, trace *Tracer) (*RenderR
 		}
 		saveDur := time.Since(saveStart)
 
-		frameDur := stepDur + renderDur + saveDur
 		stepTotal += stepDur
 		renderTotal += renderDur
 		saveTotal += saveDur
 
-		frameMs := durMs(frameDur)
+		frameMs := durMs(stepDur + renderDur + saveDur)
 		if frameMs >= slowestMs {
 			slowestMs = frameMs
 			slowestFrame = k
@@ -162,24 +128,8 @@ func (r *FrameRenderer) Render(rt *Runtime, cfg Config, trace *Tracer) (*RenderR
 		"slowest_ms", slowestMs,
 	)
 
-	n := float64(nFrames)
-	trace.Info("step_summary_avg",
-		"events_ms", stepSum.EventsMs/n,
-		"live_init_ms", stepSum.LiveInitMs/n,
-		"anims_ms", stepSum.AnimsMs/n,
-		"live_mid_ms", stepSum.LiveMidMs/n,
-		"live_final_ms", stepSum.LiveFinalMs/n,
-		"posts_ms", stepSum.PostsMs/n,
-		"live_post_ms", stepSum.LivePostMs/n,
-		"rates_ms", stepSum.RatesMs/n,
-		"refresh_calls", float64(stepSum.RefreshCalls)/n,
-		"global_evals", float64(stepSum.GlobalEvals)/n,
-		"field_evals", float64(stepSum.FieldEvals)/n,
-	)
-
 	return &RenderResult{
 		FramesDir: framesDir,
-		FrameGlob: filepath.Join(framesDir, "f%05d.png"),
 		FrameCnt:  nFrames,
 	}, nil
 }
@@ -266,7 +216,7 @@ func (a *App) run() error {
 	if err != nil {
 		return err
 	}
-	defer trace.Close()
+	defer func() { _ = trace.Close() }()
 
 	pipelineStart := time.Now()
 	trace.Info("pipeline_start",

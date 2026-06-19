@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"html"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -71,7 +70,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
-	store, err := jobs.NewStore(db, cfg.LeaseDuration)
+	store, err := jobs.NewStore(db)
 	if err != nil {
 		_ = db.Close()
 		return nil, err
@@ -179,20 +178,20 @@ func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			writeGenerateErrorStatus(w, "request too large", http.StatusRequestEntityTooLarge)
+			writeGenerateError(w, http.StatusRequestEntityTooLarge, "request too large")
 			return
 		}
-		writeGenerateErrorStatus(w, "invalid request", http.StatusBadRequest)
+		writeGenerateError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
 
 	prompt := strings.TrimSpace(r.FormValue("prompt"))
 	if prompt == "" {
-		writeGenerateError(w, "prompt is required")
+		writeGenerateError(w, http.StatusUnprocessableEntity, "prompt is required")
 		return
 	}
 	if s.generateScene == nil {
-		writeGenerateErrorStatus(w, "scene generator is not configured", http.StatusInternalServerError)
+		writeGenerateError(w, http.StatusInternalServerError, "scene generator is not configured")
 		return
 	}
 
@@ -205,7 +204,7 @@ func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		var err error
 		genID, err = s.store.CreateGeneration(r.Context(), prompt, s.cfg.OpenRouter.Model)
 		if err != nil {
-			s.writeLLMFailureStatus(w, prompt, "", "generation setup failed", http.StatusInternalServerError)
+			s.writeLLMFailure(w, r.Context(), http.StatusInternalServerError, prompt, "", "generation setup failed")
 			return
 		}
 		genCtx = withGenerationLog(r.Context(), genID, s.store)
@@ -214,19 +213,19 @@ func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	scene, err := s.generateScene(genCtx, prompt, s.setGenerateStatus)
 	if err != nil {
 		s.markGenerationFailed(r.Context(), genID, err.Error())
-		s.writeLLMFailure(w, r.Context(), prompt, genID, err.Error())
+		s.writeLLMFailure(w, r.Context(), http.StatusUnprocessableEntity, prompt, genID, err.Error())
 		return
 	}
 	if int64(len(scene)) > s.cfg.MaxSceneBytes {
 		msg := fmt.Sprintf("generated scene exceeds max size (%d bytes)", s.cfg.MaxSceneBytes)
 		s.markGenerationFailed(r.Context(), genID, msg)
-		s.writeLLMFailure(w, r.Context(), prompt, genID, msg)
+		s.writeLLMFailure(w, r.Context(), http.StatusUnprocessableEntity, prompt, genID, msg)
 		return
 	}
 	s.markGenerationCompleted(r.Context(), genID, scene)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<textarea id="generated-scene" class="hidden">%s</textarea>
+	_, _ = fmt.Fprintf(w, `<textarea id="generated-scene" class="hidden">%s</textarea>
 <script>
 (() => {
   const generated = document.getElementById("generated-scene");
@@ -241,26 +240,26 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			s.writeRenderErrorStatus(w, "", "request too large", http.StatusRequestEntityTooLarge)
+			s.writeRenderError(w, http.StatusRequestEntityTooLarge, "request too large")
 			return
 		}
-		s.writeRenderErrorStatus(w, "", "invalid request", http.StatusBadRequest)
+		s.writeRenderError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
 
 	scene := r.FormValue("scene")
 	if scene == "" {
-		s.writeRenderError(w, scene, "scene is required")
+		s.writeRenderError(w, http.StatusUnprocessableEntity, "scene is required")
 		return
 	}
 	if int64(len(scene)) > s.cfg.MaxSceneBytes {
-		s.writeRenderError(w, scene, fmt.Sprintf("scene exceeds max size (%d bytes)", s.cfg.MaxSceneBytes))
+		s.writeRenderError(w, http.StatusUnprocessableEntity, fmt.Sprintf("scene exceeds max size (%d bytes)", s.cfg.MaxSceneBytes))
 		return
 	}
 
 	if !s.renderMu.TryLock() {
 		s.logRejected(r.Context(), scene, "server is busy, try again later")
-		s.writeRenderErrorStatus(w, scene, "server is busy, try again later", http.StatusConflict)
+		s.writeRenderError(w, http.StatusConflict, "server is busy, try again later")
 		return
 	}
 	var releaseOnce sync.Once
@@ -280,7 +279,7 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 
 	job, err := s.createRenderLog(r.Context(), scene)
 	if err != nil {
-		s.writeRenderErrorStatus(w, scene, "render setup failed", http.StatusInternalServerError)
+		s.writeRenderError(w, http.StatusInternalServerError, "render setup failed")
 		return
 	}
 
@@ -288,13 +287,13 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 	workParent := filepath.Join(s.cfg.DataDir, "work")
 	if err := os.MkdirAll(workParent, 0o755); err != nil {
 		s.markRenderFailed(r.Context(), job.ID, "create work dir failed")
-		s.writeRenderErrorStatus(w, scene, "create work dir failed", http.StatusInternalServerError)
+		s.writeRenderError(w, http.StatusInternalServerError, "create work dir failed")
 		return
 	}
 	workDir, err := os.MkdirTemp(workParent, job.ID+"-*")
 	if err != nil {
 		s.markRenderFailed(r.Context(), job.ID, "create work dir failed")
-		s.writeRenderErrorStatus(w, scene, "create work dir failed", http.StatusInternalServerError)
+		s.writeRenderError(w, http.StatusInternalServerError, "create work dir failed")
 		return
 	}
 	cleanupWorkDirInHandler := true
@@ -339,12 +338,12 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 			_ = os.RemoveAll(workDir)
 			releaseRender()
 		}()
-		s.writeRenderError(w, scene, msg)
+		s.writeRenderError(w, http.StatusUnprocessableEntity, msg)
 		return
 	}
 	if renderErr != nil {
 		s.markRenderFailed(r.Context(), job.ID, renderErr.Error())
-		s.writeRenderError(w, scene, renderErr.Error())
+		s.writeRenderError(w, http.StatusUnprocessableEntity, renderErr.Error())
 		return
 	}
 
@@ -355,7 +354,7 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		_ = os.Remove(videoPath)
 		s.markRenderFailed(r.Context(), job.ID, "video encode: "+err.Error())
-		s.writeRenderError(w, scene, "video encode: "+err.Error())
+		s.writeRenderError(w, http.StatusUnprocessableEntity, "video encode: "+err.Error())
 		return
 	}
 	s.markRenderCompleted(r.Context(), job.ID, videoPath, videoSize)
@@ -397,7 +396,7 @@ func (s *Server) handleVideo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	info, err := f.Stat()
 	if err != nil {
@@ -498,165 +497,6 @@ func (s *Server) adminSecretFromRequest(w http.ResponseWriter, r *http.Request) 
 	return secret, true
 }
 
-func (s *Server) writeRenderError(w http.ResponseWriter, scene, msg string) {
-	s.writeRenderErrorStatus(w, scene, msg, http.StatusUnprocessableEntity)
-}
-
-func (s *Server) writeRenderErrorStatus(w http.ResponseWriter, scene, msg string, status int) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	docs := s.pdttLLMDocs()
-	fmt.Fprintf(w, `%s<div class="alert alert-error shadow-lg items-start" data-copy-card>
-<div class="flex w-full flex-col gap-3">
-  <div>
-    <div class="font-semibold">Compilation failed</div>
-    <div class="text-sm opacity-80">Copy the compiler error or the PDTT LLM docs and paste them into Claude.</div>
-  </div>
-  <pre class="max-h-64 overflow-auto rounded-box bg-base-300 p-3 font-mono text-sm leading-relaxed text-base-content whitespace-pre-wrap break-words" data-copy-source="error">%s</pre>
-  <pre class="hidden" data-copy-source="docs">%s</pre>
-  <div class="flex flex-wrap gap-2">
-    %s
-    %s
-  </div>
-</div>
-</div>`,
-		copyScript(),
-		html.EscapeString(msg),
-		html.EscapeString(docs),
-		copyButton("copy error", "error"),
-		copyButton("copy LLM docs", "docs"),
-	)
-}
-
-func writeGenerateError(w http.ResponseWriter, msg string) {
-	writeGenerateErrorStatus(w, msg, http.StatusUnprocessableEntity)
-}
-
-func writeGenerateErrorStatus(w http.ResponseWriter, msg string, status int) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	fmt.Fprintf(w, `<div class="alert alert-error"><pre class="text-sm whitespace-pre-wrap">%s</pre></div>`,
-		html.EscapeString(msg))
-}
-
-func (s *Server) writeLLMFailure(w http.ResponseWriter, ctx context.Context, prompt, genID, msg string) {
-	s.writeLLMFailureStatusWithContext(w, ctx, prompt, genID, msg, http.StatusUnprocessableEntity)
-}
-
-func (s *Server) writeLLMFailureStatus(w http.ResponseWriter, prompt, genID, msg string, status int) {
-	s.writeLLMFailureStatusWithContext(w, context.Background(), prompt, genID, msg, status)
-}
-
-func (s *Server) writeLLMFailureStatusWithContext(w http.ResponseWriter, ctx context.Context, prompt, genID, msg string, status int) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	docs := s.pdttLLMDocs()
-	attempt := s.lastGenerationAttempt(ctx, genID)
-	payload := llmFailureCopyText(prompt, msg, docs, attempt)
-	fmt.Fprintf(w, `%s<div class="alert alert-warning shadow-lg items-start" data-copy-card>
-<div class="flex w-full flex-col gap-3">
-  <div>
-    <div class="font-semibold">LLM could not produce valid PDTT</div>
-    <div class="text-sm opacity-80">You can copy the last attempt plus the error and ask Claude to fix it.</div>
-  </div>
-  <pre class="hidden" data-copy-source="attempt">%s</pre>
-  <pre class="hidden" data-copy-source="docs">%s</pre>
-  <div class="flex flex-wrap gap-2">
-    %s
-    %s
-  </div>
-</div>
-</div>`,
-		copyScript(),
-		html.EscapeString(payload),
-		html.EscapeString(docs),
-		copyButton("copy last attempt + error", "attempt"),
-		copyButton("copy LLM docs", "docs"),
-	)
-}
-
-func (s *Server) lastGenerationAttempt(ctx context.Context, genID string) *jobs.GenerationAttempt {
-	if s.store == nil || genID == "" {
-		return nil
-	}
-	attempt, err := s.store.LastGenerationAttempt(ctx, genID)
-	if err != nil {
-		return nil
-	}
-	return attempt
-}
-
-func (s *Server) pdttLLMDocs() string {
-	if s == nil || s.cfg == nil {
-		return loadPDTTLLMDocs(config.OpenRouter{})
-	}
-	return loadPDTTLLMDocs(s.cfg.OpenRouter)
-}
-
-func llmFailureCopyText(prompt, msg, docs string, attempt *jobs.GenerationAttempt) string {
-	var b strings.Builder
-	b.WriteString("The LLM could not produce valid PDTT. Please fix the last attempt and return only a complete PDTT scene.\n\nUser prompt:\n")
-	b.WriteString(prompt)
-	if attempt != nil {
-		if strings.TrimSpace(attempt.ExtractedScene) != "" {
-			b.WriteString("\n\nLast extracted PDTT attempt:\n")
-			b.WriteString(attempt.ExtractedScene)
-		} else if strings.TrimSpace(attempt.ResponseContent) != "" {
-			b.WriteString("\n\nLast raw LLM response:\n")
-			b.WriteString(attempt.ResponseContent)
-		}
-		if strings.TrimSpace(attempt.ValidationError) != "" {
-			b.WriteString("\n\nValidation error:\n")
-			b.WriteString(attempt.ValidationError)
-		}
-		if strings.TrimSpace(attempt.OpenRouterError) != "" {
-			b.WriteString("\n\nOpenRouter error:\n")
-			b.WriteString(attempt.OpenRouterError)
-		}
-	}
-	b.WriteString("\n\nFinal error:\n")
-	b.WriteString(msg)
-	b.WriteString("\n\nPDTT LLM docs:\n")
-	b.WriteString(docs)
-	return b.String()
-}
-
-func copyScript() string {
-	return `<script>
-window.pdttCopyFrom = window.pdttCopyFrom || function(button, name) {
-  const source = button.closest("[data-copy-card]")?.querySelector('[data-copy-source="' + name + '"]');
-  const text = source?.textContent || "";
-  const done = () => {
-    const previous = button.textContent;
-    button.textContent = "copied";
-    setTimeout(() => { button.textContent = previous; }, 1200);
-  };
-  if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(text).then(done);
-    return;
-  }
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.style.position = "fixed";
-  textarea.style.left = "-9999px";
-  document.body.appendChild(textarea);
-  textarea.focus();
-  textarea.select();
-  document.execCommand("copy");
-  textarea.remove();
-  done();
-};
-</script>`
-}
-
-func copyButton(label, source string) string {
-	return fmt.Sprintf(
-		`<button type="button" class="btn btn-xs btn-outline" onclick="pdttCopyFrom(this, '%s')">%s</button>`,
-		html.EscapeString(source),
-		html.EscapeString(label),
-	)
-}
-
 type adminPageData struct {
 	Secret        string
 	Active        string
@@ -750,12 +590,6 @@ type generateStatusData struct {
 	Running bool
 	Stage   string
 	Detail  string
-}
-
-// drainBody is used in tests.
-func drainBody(r io.ReadCloser) {
-	io.Copy(io.Discard, r)
-	_ = r.Close()
 }
 
 func (s *Server) isBusy() bool {
@@ -956,21 +790,6 @@ func (s *Server) listRenderLogs(ctx context.Context, limit int) ([]adminRenderLo
 	out := make([]adminRenderLog, 0, len(rows))
 	for _, job := range rows {
 		out = append(out, renderLogRow(job))
-	}
-	return out, nil
-}
-
-func (s *Server) listGenerationLogs(ctx context.Context, limit int) ([]adminGenerationLog, error) {
-	if s.store == nil {
-		return nil, nil
-	}
-	rows, err := s.store.ListRecentGenerations(ctx, limit)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]adminGenerationLog, 0, len(rows))
-	for _, gen := range rows {
-		out = append(out, generationLogRow(gen))
 	}
 	return out, nil
 }

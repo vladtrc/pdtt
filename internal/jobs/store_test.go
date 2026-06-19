@@ -14,7 +14,7 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS render_jobs").
 		WillReturnResult(sqlmock.NewResult(0, 0))
@@ -33,12 +33,12 @@ func TestMigrateIdempotent(t *testing.T) {
 	}
 }
 
-func TestStoreCreateAndStatusView(t *testing.T) {
+func TestStoreCreateRunning(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	now := time.Now().UTC()
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS render_jobs").
@@ -51,13 +51,13 @@ func TestStoreCreateAndStatusView(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectPing()
 
-	store, err := NewStore(db, time.Minute)
+	store, err := NewStore(db)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
 
 	mock.ExpectExec("INSERT INTO render_jobs").
-		WithArgs(sqlmock.AnyArg(), "scene text", StatusQueued, StageQueued, sqlmock.AnyArg()).
+		WithArgs(sqlmock.AnyArg(), "scene text", StatusRunning, StageRenderingFrames, sqlmock.AnyArg(), sqlmock.AnyArg(), store.workerID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	id := "abc123"
@@ -67,57 +67,17 @@ func TestStoreCreateAndStatusView(t *testing.T) {
 			"id", "scene", "status", "stage", "error_message",
 			"video_path", "video_size", "created_at", "started_at", "completed_at",
 			"lease_owner", "lease_expires_at",
-		}).AddRow(id, "scene text", StatusQueued, StageQueued, "", "", 0, now, nil, nil, "", nil))
+		}).AddRow(id, "scene text", StatusRunning, StageRenderingFrames, "", "", 0, now, now, nil, store.workerID, nil))
 
-	job, err := store.Create(context.Background(), "scene text")
+	job, err := store.CreateRunning(context.Background(), "scene text")
 	if err != nil {
-		t.Fatalf("Create: %v", err)
+		t.Fatalf("CreateRunning: %v", err)
 	}
 	if job.ID == "" {
 		t.Fatal("expected generated id")
 	}
-
-	mock.ExpectQuery("SELECT id, scene, status").
-		WithArgs(job.ID).
-		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "scene", "status", "stage", "error_message",
-			"video_path", "video_size", "created_at", "started_at", "completed_at",
-			"lease_owner", "lease_expires_at",
-		}).AddRow(job.ID, "scene text", StatusQueued, StageQueued, "", "", 0, now, nil, nil, "", nil))
-	mock.ExpectQuery("FROM render_jobs WHERE status = \\? AND \\(created_at < \\? OR").
-		WithArgs(StatusQueued, now, now, sqlmock.AnyArg()).
-		WillReturnRows(sqlmock.NewRows([]string{"pos"}).AddRow(1))
-
-	view, err := store.StatusView(context.Background(), job.ID)
-	if err != nil {
-		t.Fatalf("StatusView: %v", err)
-	}
-	if view.Status != StatusQueued || view.Stage != StageQueued {
-		t.Fatalf("unexpected view: %+v", view)
-	}
-	if view.QueuePos != 1 {
-		t.Fatalf("queue pos = %d", view.QueuePos)
-	}
-}
-
-func TestRecoverStaleMarksExpiredRunningJobs(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	mock.ExpectExec("UPDATE render_jobs").
-		WithArgs(StatusFailed, StageFailed, sqlmock.AnyArg(), sqlmock.AnyArg(), StatusRunning, sqlmock.AnyArg()).
-		WillReturnResult(sqlmock.NewResult(0, 2))
-
-	store := &Store{db: db, leaseDuration: time.Minute, workerID: "worker"}
-	n, err := store.RecoverStale(context.Background())
-	if err != nil {
-		t.Fatalf("RecoverStale: %v", err)
-	}
-	if n != 2 {
-		t.Fatalf("rows = %d", n)
+	if job.Status != StatusRunning {
+		t.Fatalf("status = %q", job.Status)
 	}
 }
 
@@ -126,9 +86,9 @@ func TestMarkFailedAndCompleted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
-	store := &Store{db: db, leaseDuration: time.Minute, workerID: "worker1"}
+	store := &Store{db: db, workerID: "worker1"}
 
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE render_jobs
 		SET status = ?, stage = ?, error_message = ?,
@@ -156,9 +116,9 @@ func TestGenerationLogging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
-	store := &Store{db: db, leaseDuration: time.Minute, workerID: "worker1"}
+	store := &Store{db: db, workerID: "worker1"}
 
 	mock.ExpectExec("INSERT INTO generation_logs").
 		WithArgs(sqlmock.AnyArg(), "draw parabola", "test-model", GenerationStatusRunning, sqlmock.AnyArg()).

@@ -70,7 +70,7 @@ func writeFramePNG(t *testing.T, path string, width, height int) {
 		t.Fatalf("create PNG: %v", err)
 	}
 	if err := png.Encode(file, img); err != nil {
-		file.Close()
+		_ = file.Close()
 		t.Fatalf("encode PNG: %v", err)
 	}
 	if err := file.Close(); err != nil {

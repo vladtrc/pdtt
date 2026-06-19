@@ -67,9 +67,3 @@ func EncodeFramesToMP4(framesDir string, fps float64, destPath string) (int64, e
 	cleanup = false
 	return info.Size(), nil
 }
-
-type mp4Encoder struct{}
-
-func (mp4Encoder) EncodeFramesToFile(framesDir string, fps float64, _ int, destPath string) (int64, error) {
-	return EncodeFramesToMP4(framesDir, fps, destPath)
-}

@@ -12,9 +12,9 @@ import (
 	"os"
 	"strings"
 
+	"github.com/vladtrc/pdtt/internal/config"
 	pdttmd "github.com/vladtrc/pdtt/md"
 	"github.com/vladtrc/pdtt/pkg/render"
-	"github.com/vladtrc/pdtt/internal/config"
 )
 
 const (
@@ -240,7 +240,7 @@ func (g *openRouterGenerator) chat(ctx context.Context, messages []openRouterMes
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {

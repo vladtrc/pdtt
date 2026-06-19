@@ -5,7 +5,7 @@ FPS ?= 30
 W ?= 960
 H ?= 540
 GO_FILES := $(shell git ls-files '*.go')
-GO_LINT_PACKAGES := ./cmd/... ./internal/...
+GO_LINT_PACKAGES := ./cmd/... ./internal/... ./pkg/...
 GOFUMPT := go run mvdan.cc/gofumpt@latest
 GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 

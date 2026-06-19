@@ -115,8 +115,10 @@ func TestShapeMorphShowcaseAllShapes(t *testing.T) {
 	}
 
 	// Arrow is a stroke-end modifier on the same path, not a separate record.
-	if err := rt.Step(1.2); err != nil {
-		t.Fatalf("Step(1.2): %v", err)
+	// The `stroke.end -> arrow` tween lands in the ~2.6s–3.15s window; sample
+	// just after it, while stick is still active (it morphs away later).
+	if err := rt.Step(3.3); err != nil {
+		t.Fatalf("Step(3.3): %v", err)
 	}
 	if got := stick.fstr("stroke.end"); got != "arrow" {
 		t.Fatalf("stick.stroke.end = %q, want arrow", got)

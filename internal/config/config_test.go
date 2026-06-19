@@ -75,8 +75,6 @@ func TestValidateRejectsMissingAdminSecret(t *testing.T) {
 		RenderTimeout: time.Minute,
 		Retention:     time.Hour,
 		MaxSceneBytes: 4096,
-		LeaseDuration: time.Minute,
-		WorkerPoll:    time.Second,
 		CleanupEvery:  time.Hour,
 	}
 	if err := cfg.Validate(); err == nil {
@@ -93,8 +91,6 @@ func TestValidateRejectsUnsafeAdminSecret(t *testing.T) {
 		Retention:     time.Hour,
 		MaxSceneBytes: 4096,
 		AdminSecret:   "bad/secret",
-		LeaseDuration: time.Minute,
-		WorkerPoll:    time.Second,
 		CleanupEvery:  time.Hour,
 	}
 	if err := cfg.Validate(); err == nil {
@@ -111,24 +107,10 @@ func TestValidateRejectsInvalidDurations(t *testing.T) {
 		Retention:     time.Hour,
 		MaxSceneBytes: 4096,
 		AdminSecret:   "ok-secret",
-		LeaseDuration: time.Minute,
-		WorkerPoll:    time.Second,
 		CleanupEvery:  time.Hour,
 	}
 	if err := base.Validate(); err != nil {
 		t.Fatalf("base config: %v", err)
-	}
-
-	shortLease := base
-	shortLease.LeaseDuration = time.Second
-	if err := shortLease.Validate(); err == nil {
-		t.Fatal("expected lease_duration validation error")
-	}
-
-	shortPoll := base
-	shortPoll.WorkerPoll = time.Millisecond
-	if err := shortPoll.Validate(); err == nil {
-		t.Fatal("expected worker_poll validation error")
 	}
 
 	shortOpenRouterTimeout := base

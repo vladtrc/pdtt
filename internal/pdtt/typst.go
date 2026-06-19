@@ -47,13 +47,6 @@ func (b Box) Width() float64 {
 	return b.Max[0] - b.Min[0]
 }
 
-func (b Box) Height() float64 {
-	if !b.Valid {
-		return 0
-	}
-	return b.Max[1] - b.Min[1]
-}
-
 type typstCacheKey struct {
 	markup string
 	math   bool

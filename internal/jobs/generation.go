@@ -148,7 +148,7 @@ func scanGenerationLogRows(rows *sql.Rows, err error) ([]*GenerationLog, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []*GenerationLog
 	for rows.Next() {
@@ -184,7 +184,7 @@ func (s *Store) ListRecentGenerationAttempts(ctx context.Context, limit int) ([]
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []*GenerationAttempt
 	for rows.Next() {

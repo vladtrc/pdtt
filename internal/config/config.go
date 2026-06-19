@@ -18,8 +18,6 @@ const (
 	defaultRenderTimeout     = maxRenderTimeout
 	defaultRetention         = 24 * time.Hour
 	defaultMaxSceneBytes     = 1 << 20 // 1 MiB
-	defaultLeaseDuration     = 2 * time.Minute
-	defaultWorkerPoll        = 2 * time.Second
 	defaultCleanupEvery      = 10 * time.Minute
 	defaultOpenRouterTimeout = time.Minute
 )
@@ -32,8 +30,6 @@ type Config struct {
 	Retention     time.Duration `yaml:"retention"`
 	MaxSceneBytes int64         `yaml:"max_scene_bytes"`
 	AdminSecret   string        `yaml:"admin_secret"`
-	LeaseDuration time.Duration `yaml:"lease_duration"`
-	WorkerPoll    time.Duration `yaml:"worker_poll"`
 	CleanupEvery  time.Duration `yaml:"cleanup_every"`
 	OpenRouter    OpenRouter    `yaml:"openrouter"`
 }
@@ -104,12 +100,6 @@ func applyDefaults(cfg *Config) {
 	if cfg.MaxSceneBytes <= 0 {
 		cfg.MaxSceneBytes = defaultMaxSceneBytes
 	}
-	if cfg.LeaseDuration == 0 {
-		cfg.LeaseDuration = defaultLeaseDuration
-	}
-	if cfg.WorkerPoll == 0 {
-		cfg.WorkerPoll = defaultWorkerPoll
-	}
 	if cfg.CleanupEvery == 0 {
 		cfg.CleanupEvery = defaultCleanupEvery
 	}
@@ -149,17 +139,8 @@ func (c *Config) Validate() error {
 	if strings.ContainsAny(c.AdminSecret, "/?#") {
 		return fmt.Errorf("admin_secret must be URL-safe (no /, ?, or #)")
 	}
-	if c.LeaseDuration < 5*time.Second {
-		return fmt.Errorf("lease_duration must be at least 5s")
-	}
-	if c.WorkerPoll < 100*time.Millisecond {
-		return fmt.Errorf("worker_poll must be at least 100ms")
-	}
 	if c.CleanupEvery < time.Minute {
 		return fmt.Errorf("cleanup_every must be at least 1m")
-	}
-	if c.LeaseDuration < c.WorkerPoll {
-		return fmt.Errorf("lease_duration must be >= worker_poll")
 	}
 	if c.OpenRouter.Timeout != 0 && c.OpenRouter.Timeout < 5*time.Second {
 		return fmt.Errorf("openrouter.timeout must be at least 5s")

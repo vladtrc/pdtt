@@ -471,27 +471,9 @@ func (r *Renderer) drawText(dc *gg.Context, c cam, e *Entity, tf Transform) {
 		dc.SetFontFace(faceAt(emPx * refPx / 48.0)) // em world ≈ 48pt at ref scale
 	}
 
-	budget := lay.TotalRunes
-	if e.Reveal < 1 {
-		budget = int(e.Reveal*float64(lay.TotalRunes) + 0.5)
-	}
-	used := 0
 	for _, line := range lay.Lines {
 		for _, sg := range line.Segs {
-			if used >= budget {
-				return
-			}
-			partial := false
 			text := sg.Text
-			if used+sg.Runes > budget {
-				partial = true
-				if len(sg.Contours) > 0 {
-					return
-				}
-				runes := []rune(text)
-				text = string(runes[:budget-used])
-			}
-			used += sg.Runes
 			col := baseCol
 			segOp := op
 			if sg.Part != nil {
@@ -508,7 +490,7 @@ func (r *Renderer) drawText(dc *gg.Context, c cam, e *Entity, tf Transform) {
 			wx := at[0] - line.W/2 + sg.X
 			wy := at[1] + line.Y
 			setColor(dc, col, segOp)
-			if len(sg.Contours) > 0 && !partial {
+			if len(sg.Contours) > 0 {
 				dc.SetFillRuleEvenOdd()
 				for _, contour := range sg.Contours {
 					if len(contour) == 0 {

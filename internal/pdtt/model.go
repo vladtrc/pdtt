@@ -95,7 +95,6 @@ type Entity struct {
 
 	// animation state owned by verbs
 	Offset         Vec
-	Reveal         float64
 	MorphContours  [][]Vec
 	MorphHasStroke bool
 	MorphStroke    Color
@@ -146,13 +145,13 @@ func (e *Entity) field(name string) *Field {
 	if f, ok := e.Fields[name]; ok {
 		return f
 	}
-	f := &Field{Name: name, Val: defaultFieldVal(e.Type, name)}
+	f := &Field{Name: name, Val: defaultFieldVal(name)}
 	e.Fields[name] = f
 	e.Order = append(e.Order, name)
 	return f
 }
 
-func defaultFieldVal(typ, name string) Value {
+func defaultFieldVal(name string) Value {
 	switch name {
 	case "opacity", "draw", "scale":
 		return 1.0
@@ -169,7 +168,7 @@ func defaultFieldVal(typ, name string) Value {
 func (e *Entity) fnum(name string) float64 {
 	f, ok := e.Fields[name]
 	if !ok || f.Val == nil {
-		if d := defaultFieldVal(e.Type, name); d != nil {
+		if d := defaultFieldVal(name); d != nil {
 			if x, ok := d.(float64); ok {
 				return x
 			}
@@ -460,15 +459,6 @@ type Scope struct {
 	rt         *Runtime
 	binds      map[string]Value
 	localStack map[string]bool
-}
-
-func (s *Scope) with(name string, v Value) *Scope {
-	nb := map[string]Value{}
-	for k, x := range s.binds {
-		nb[k] = x
-	}
-	nb[name] = v
-	return &Scope{rt: s.rt, binds: nb, localStack: s.localStack}
 }
 
 type boundMethod struct {
@@ -980,7 +970,7 @@ func (s *Scope) entityAttr(e *Entity, name string) (Value, error) {
 	case "h":
 		return h, nil
 	}
-	if d := defaultFieldVal(e.Type, name); d != nil {
+	if d := defaultFieldVal(name); d != nil {
 		return d, nil
 	}
 	return nil, fmt.Errorf("record %s has no field %q", e.Name, name)
@@ -991,7 +981,7 @@ func (s *Scope) fieldNamespaceAttr(ns fieldNamespace, name string) (Value, error
 	if f, ok := ns.E.Fields[fieldName]; ok && f.Val != nil {
 		return f.Val, nil
 	}
-	if d := defaultFieldVal(ns.E.Type, fieldName); d != nil {
+	if d := defaultFieldVal(fieldName); d != nil {
 		return d, nil
 	}
 	return nil, fmt.Errorf("record %s has no field %q", ns.E.Name, fieldName)
@@ -1059,12 +1049,12 @@ func (s *Scope) evalCall(v CallE) (Value, error) {
 			}
 			args[i] = x
 		}
-		return callMethod(s, bm, args)
+		return callMethod(bm, args)
 	}
 	return nil, fmt.Errorf("cannot call %T", fnv)
 }
 
-func callMethod(s *Scope, bm boundMethod, args []Value) (Value, error) {
+func callMethod(bm boundMethod, args []Value) (Value, error) {
 	switch bm.name {
 	case "point": // axes data coords -> world point
 		if len(args) < 2 {
@@ -1138,7 +1128,7 @@ func entOf(v Value) *Entity {
 	return nil
 }
 
-func anchorOf(s *Scope, v Value) (Vec, float64, float64) {
+func anchorOf(v Value) (Vec, float64, float64) {
 	if e := entOf(v); e != nil {
 		w, h := entitySize(e)
 		return e.transform().At, w, h
@@ -1153,136 +1143,14 @@ func anchorOf(s *Scope, v Value) (Vec, float64, float64) {
 	return Vec{}, 0, 0
 }
 
-const (
-	lorenzSigma = 10.0
-	lorenzBeta  = 8.0 / 3.0
-)
-
-var lorenzStarts = [][3]float64{
-	{1.0, 1.0, 1.0},
-	{-1.1, 0.6, 5.0},
-	{0.7, -0.9, 10.0},
-	{-0.5, 1.1, 16.0},
-	{1.3, -0.6, 22.0},
-}
-
-type lorenzMemoKey struct {
-	t    float64
-	rho  float64
-	seed int
-}
-
-var lorenzMemo = map[lorenzMemoKey][3]float64{}
-
-func lorenzAt(t, rho, seed float64) (float64, float64, float64) {
-	n := len(lorenzStarts)
-	if n == 0 {
-		return 0, 0, 0
-	}
-	idx := int(seed)
-	if idx < 0 {
-		idx = 0
-	}
-	if idx >= n {
-		idx = idx % n
-	}
-	if t <= 0 {
-		return lorenzStarts[idx][0], lorenzStarts[idx][1], lorenzStarts[idx][2]
-	}
-	key := lorenzMemoKey{t: t, rho: rho, seed: idx}
-	if v, ok := lorenzMemo[key]; ok {
-		return v[0], v[1], v[2]
-	}
-	x, y, z := lorenzStarts[idx][0], lorenzStarts[idx][1], lorenzStarts[idx][2]
-	const dt = 0.01
-	steps := int(t / dt)
-	rem := t - float64(steps)*dt
-	for i := 0; i < steps; i++ {
-		dx := lorenzSigma*(y-x)
-		dy := x*(rho-z) - y
-		dz := x*y - lorenzBeta*z
-		x += dx*dt
-		y += dy*dt
-		z += dz*dt
-	}
-	if rem > 0 {
-		dx := lorenzSigma*(y-x)
-		dy := x*(rho-z) - y
-		dz := x*y - lorenzBeta*z
-		x += dx*rem
-		y += dy*rem
-		z += dz*rem
-	}
-	lorenzMemo[key] = [3]float64{x, y, z}
-	if len(lorenzMemo) > 200000 {
-		lorenzMemo = map[lorenzMemoKey][3]float64{}
-	}
-	return x, y, z
-}
-
-func lorenzBuiltin(axis int) builtinFn {
-	return func(s *Scope, a []Value) (Value, error) {
-		if len(a) != 3 {
-			return nil, fmt.Errorf("lorenz_* expects (t, rho, seed)")
-		}
-		t, err := asFloat(a[0])
-		if err != nil {
-			return nil, err
-		}
-		rho, err := asFloat(a[1])
-		if err != nil {
-			return nil, err
-		}
-		seed, err := asFloat(a[2])
-		if err != nil {
-			return nil, err
-		}
-		x, y, z := lorenzAt(t, rho, seed)
-		switch axis {
-		case 0:
-			return x, nil
-		case 1:
-			return y, nil
-		default:
-			return z, nil
-		}
-	}
+var unaryMathFns = map[string]func(float64) float64{
+	"sin": math.Sin, "cos": math.Cos, "exp": math.Exp,
+	"sinh": math.Sinh, "cosh": math.Cosh, "abs": math.Abs,
+	"sqrt": math.Sqrt, "log": math.Log,
 }
 
 func init() {
 	builtins = map[string]builtinFn{
-		"sin": func(s *Scope, a []Value) (Value, error) {
-			f, err := arg1f(a)
-			return math.Sin(f), err
-		},
-		"cos": func(s *Scope, a []Value) (Value, error) {
-			f, err := arg1f(a)
-			return math.Cos(f), err
-		},
-		"exp": func(s *Scope, a []Value) (Value, error) {
-			f, err := arg1f(a)
-			return math.Exp(f), err
-		},
-		"sinh": func(s *Scope, a []Value) (Value, error) {
-			f, err := arg1f(a)
-			return math.Sinh(f), err
-		},
-		"cosh": func(s *Scope, a []Value) (Value, error) {
-			f, err := arg1f(a)
-			return math.Cosh(f), err
-		},
-		"abs": func(s *Scope, a []Value) (Value, error) {
-			f, err := arg1f(a)
-			return math.Abs(f), err
-		},
-		"sqrt": func(s *Scope, a []Value) (Value, error) {
-			f, err := arg1f(a)
-			return math.Sqrt(f), err
-		},
-		"log": func(s *Scope, a []Value) (Value, error) {
-			f, err := arg1f(a)
-			return math.Log(f), err
-		},
 		"pow": func(s *Scope, a []Value) (Value, error) {
 			if len(a) != 2 {
 				return nil, fmt.Errorf("pow(base, exp) expects 2 args")
@@ -1329,7 +1197,7 @@ func init() {
 			if len(a) == 0 {
 				return Vec{}, nil
 			}
-			at, _, _ := anchorOf(s, a[0])
+			at, _, _ := anchorOf(a[0])
 			return at, nil
 		},
 		"below": func(s *Scope, a []Value) (Value, error) {
@@ -1340,7 +1208,7 @@ func init() {
 			if len(a) > 1 {
 				gap, _ = asFloat(a[1])
 			}
-			at, _, h := anchorOf(s, a[0])
+			at, _, h := anchorOf(a[0])
 			return Vec{at[0], at[1] - h/2 - gap - 0.3}, nil
 		},
 		"above": func(s *Scope, a []Value) (Value, error) {
@@ -1351,7 +1219,7 @@ func init() {
 			if len(a) > 1 {
 				gap, _ = asFloat(a[1])
 			}
-			at, _, h := anchorOf(s, a[0])
+			at, _, h := anchorOf(a[0])
 			return Vec{at[0], at[1] + h/2 + gap + 0.3}, nil
 		},
 		"left": func(s *Scope, a []Value) (Value, error) {
@@ -1367,7 +1235,7 @@ func init() {
 				return nil, fmt.Errorf("right_of(x, gap)")
 			}
 			gap, _ := asFloat(a[1])
-			at, w, _ := anchorOf(s, a[0])
+			at, w, _ := anchorOf(a[0])
 			return Vec{at[0] + w/2 + gap, at[1]}, nil
 		},
 		"corner": func(s *Scope, a []Value) (Value, error) {
@@ -1461,20 +1329,12 @@ func init() {
 			}
 			return total, nil
 		},
-		// extern fn spiral(i, n) -> point: the Go-side stub for example 90.
-		"spiral": func(s *Scope, a []Value) (Value, error) {
-			if len(a) != 2 {
-				return nil, fmt.Errorf("spiral(i, n)")
-			}
-			i, _ := asFloat(a[0])
-			n, _ := asFloat(a[1])
-			r := 0.6 + 2.4*i/math.Max(n, 1)
-			ang := i * 2.399963 // golden angle
-			return Vec{r * math.Cos(ang), r * math.Sin(ang)}, nil
-		},
-		"lorenz_x": lorenzBuiltin(0),
-		"lorenz_y": lorenzBuiltin(1),
-		"lorenz_z": lorenzBuiltin(2),
+	}
+	for name, fn := range unaryMathFns {
+		builtins[name] = func(s *Scope, a []Value) (Value, error) {
+			f, err := arg1f(a)
+			return fn(f), err
+		}
 	}
 }
 
