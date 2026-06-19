@@ -18,7 +18,7 @@ cam_d: 14.0
 dot flywheel:
   rate angle: 1.22
   rate value: 0.34
-  rate side: 8.5
+  rate side: 6.2
 
 phase: flywheel.angle
 live_yaw: -0.78 + flywheel.value
@@ -181,14 +181,14 @@ strand[0..n as i]:
 # A comet runs along the same living geometry throughout the transformation.
 trail[0..18 as i]:
   fade: 1 - i / 18
-  track: (flywheel.side - 0.42 * i + 40 * n) % (2 * n)
+  track: (flywheel.side - 0.30 * i + 40 * n) % (2 * n)
   pick: track % n
 
   dot p:
     at: track < n ? strand[pick].a.at : strand[pick].b.at
-    radius: 0.018 + 0.048 * fade
+    radius: 0.022 + 0.052 * fade
     color: color.yellow
-    opacity: energy * (1 - outro) * fade * 0.72
+    opacity: energy * (1 - outro) * fade * 0.78
 
 erase_pick: min(n - 1, outro * (n + 8))
 spark_lock: min(1, outro * 5)
@@ -199,13 +199,13 @@ erase_at: [
 
 dot bead_glow:
   at: mix(trail[0].p.at, erase_at, spark_lock)
-  radius: 0.20 + 0.055 * pulse
+  radius: 0.23 + 0.06 * pulse
   color: color.gold
   opacity: energy * (0.12 + 0.10 * pulse)
 
 dot bead:
   at: mix(trail[0].p.at, erase_at, spark_lock)
-  radius: 0.075 + 0.025 * pulse
+  radius: 0.090 + 0.026 * pulse
   color: color.yellow
   opacity: energy * 0.98
 
