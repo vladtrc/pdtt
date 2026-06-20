@@ -1,23 +1,28 @@
 package render
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
-func TestValidate(t *testing.T) {
-	valid := `scene validate_ok
+func TestSceneWritesDebugFrames(t *testing.T) {
+	outDir := t.TempDir()
+	res, err := Scene(`scene api
 
-path s:
+dot p:
   at: [0, 0]
-  points: [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]]
-  closed: 1
-  stroke.color: color.white
-
-| 1s | s{draw: 0} -> s
-`
-	if err := Validate(valid); err != nil {
-		t.Fatalf("Validate(valid): %v", err)
+`, outDir, Config{FPS: 1, Width: 80, Height: 60})
+	if err != nil {
+		t.Fatalf("Scene: %v", err)
 	}
-
-	if err := Validate("not pdtt"); err == nil {
-		t.Fatal("Validate(invalid) should fail")
+	if res.FrameCnt != 1 {
+		t.Fatalf("FrameCnt = %d, want 1", res.FrameCnt)
+	}
+	if res.FramesDir != filepath.Join(outDir, "frames") {
+		t.Fatalf("FramesDir = %q, want %q", res.FramesDir, filepath.Join(outDir, "frames"))
+	}
+	if _, err := os.Stat(filepath.Join(res.FramesDir, "f00000.png")); err != nil {
+		t.Fatalf("rendered frame missing: %v", err)
 	}
 }

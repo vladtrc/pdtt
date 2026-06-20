@@ -69,7 +69,7 @@ func (r PartColorRef) Get() Value {
 	return entityColor(r.P.E)
 }
 func (r PartColorRef) Set(v Value) { r.P.Color = v }
-func (r PartColorRef) Key() string { return r.P.E.Name + ".parts." + r.P.Name + ".color" }
+func (r PartColorRef) Key() string { return r.P.E.Name + ".parts." + r.P.key() + ".color" }
 
 type PartOpacityRef struct{ P *PartState }
 
@@ -80,7 +80,60 @@ func (r PartOpacityRef) Set(v Value) {
 		r.P.Opacity = f
 	}
 }
-func (r PartOpacityRef) Key() string { return r.P.E.Name + ".parts." + r.P.Name + ".opacity" }
+func (r PartOpacityRef) Key() string { return r.P.E.Name + ".parts." + r.P.key() + ".opacity" }
+
+// partFloatRef tweens one of a part's scalar emphasis fields (strike, underline,
+// wiggle, scale). The attr name doubles as the liveness key suffix.
+type partFloatRef struct {
+	P    *PartState
+	Attr string
+}
+
+func (r partFloatRef) Get() Value {
+	switch r.Attr {
+	case "strike":
+		return r.P.Strike
+	case "underline":
+		return r.P.Underline
+	case "wiggle":
+		return r.P.Wiggle
+	case "scale":
+		return r.P.scaleOr1()
+	}
+	return 0.0
+}
+
+func (r partFloatRef) Set(v Value) {
+	f, err := asFloat(v)
+	if err != nil {
+		return
+	}
+	switch r.Attr {
+	case "strike":
+		r.P.Strike = f
+	case "underline":
+		r.P.Underline = f
+	case "wiggle":
+		r.P.Wiggle = f
+	case "scale":
+		r.P.Scale = f
+	}
+}
+
+func (r partFloatRef) Key() string { return r.P.E.Name + ".parts." + r.P.key() + "." + r.Attr }
+
+// partRefFor builds the tweenable Ref for `<text>.sub("...").<attr>`.
+func partRefFor(p *PartState, attr string) (Ref, bool) {
+	switch attr {
+	case "color":
+		return PartColorRef{P: p}, true
+	case "opacity":
+		return PartOpacityRef{P: p}, true
+	case "strike", "underline", "wiggle", "scale":
+		return partFloatRef{P: p, Attr: attr}, true
+	}
+	return nil, false
+}
 
 type WarpBlendRef struct{ E *Entity }
 

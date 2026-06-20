@@ -35,7 +35,12 @@ type glyphUse struct {
 	matrix svgMatrix
 }
 
-func parseTypstSVG(src string) ([][]Vec, Box, error) {
+// parseTypstSVG returns the glyphs of the rendered markup, each glyph being its
+// own group of closed contours (outer outline plus any counters/holes). Keeping
+// glyphs grouped — rather than flattening every contour into one list — lets the
+// renderer reveal text one whole letter at a time (manim's Write) instead of
+// wiping a hard vertical edge across half-drawn glyphs.
+func parseTypstSVG(src string) ([][][]Vec, Box, error) {
 	dec := xml.NewDecoder(strings.NewReader(src))
 
 	symbols := map[string][][]Vec{}
@@ -86,7 +91,7 @@ func parseTypstSVG(src string) ([][]Vec, Box, error) {
 				if textDepth == 0 {
 					continue
 				}
-				href := attrAny(t.Attr, "href")
+				href := attr(t.Attr, "href")
 				if href == "" {
 					continue
 				}
@@ -111,10 +116,11 @@ func parseTypstSVG(src string) ([][]Vec, Box, error) {
 		}
 	}
 
-	var contours [][]Vec
+	var glyphs [][][]Vec
 	var bbox Box
 	for _, u := range uses {
 		glyph := symbols[u.id]
+		var placedGlyph [][]Vec
 		for _, contour := range glyph {
 			if len(contour) == 0 {
 				continue
@@ -126,22 +132,16 @@ func parseTypstSVG(src string) ([][]Vec, Box, error) {
 				placed[i] = q
 				bbox.Include(q)
 			}
-			contours = append(contours, placed)
+			placedGlyph = append(placedGlyph, placed)
+		}
+		if len(placedGlyph) > 0 {
+			glyphs = append(glyphs, placedGlyph)
 		}
 	}
-	return contours, bbox, nil
+	return glyphs, bbox, nil
 }
 
 func attr(attrs []xml.Attr, key string) string {
-	for _, a := range attrs {
-		if a.Name.Local == key {
-			return a.Value
-		}
-	}
-	return ""
-}
-
-func attrAny(attrs []xml.Attr, key string) string {
 	for _, a := range attrs {
 		if a.Name.Local == key {
 			return a.Value

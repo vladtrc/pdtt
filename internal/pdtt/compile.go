@@ -8,7 +8,6 @@ package pdtt
 import (
 	"fmt"
 	"math"
-	"reflect"
 	"sort"
 	"strings"
 )
@@ -102,8 +101,9 @@ type Runtime struct {
 	writerAnims  map[string][]*Anim
 	globalWriter map[string]bool
 
-	// Per evalLiveFields pass: cache family-local bindings keyed by it.Cols identity.
-	localBindCache map[uintptr]map[string]Value
+	// Per evalLiveFields pass: cache family-local bindings by explicit instance ID.
+	localBindCache map[int]map[string]Value
+	nextLocalID    int
 	evalBinds      map[string]Value
 }
 
@@ -122,22 +122,15 @@ func (rt *Runtime) warnOnce(msg string) {
 	}
 }
 
-func mapCacheKey(m map[string]Value) uintptr {
-	if m == nil {
-		return 0
-	}
-	return reflect.ValueOf(m).Pointer()
-}
-
 func (rt *Runtime) clearLocalBindCache() {
 	rt.localBindCache = nil
 }
 
-func (rt *Runtime) cachedLocalBind(cols map[string]Value, name string) (Value, bool) {
-	if rt.localBindCache == nil {
+func (rt *Runtime) cachedLocalBind(localID int, name string) (Value, bool) {
+	if localID == 0 || rt.localBindCache == nil {
 		return nil, false
 	}
-	m, ok := rt.localBindCache[mapCacheKey(cols)]
+	m, ok := rt.localBindCache[localID]
 	if !ok {
 		return nil, false
 	}
@@ -145,15 +138,22 @@ func (rt *Runtime) cachedLocalBind(cols map[string]Value, name string) (Value, b
 	return v, ok
 }
 
-func (rt *Runtime) cacheLocalBind(cols map[string]Value, name string, val Value) {
-	key := mapCacheKey(cols)
+func (rt *Runtime) cacheLocalBind(localID int, name string, val Value) {
+	if localID == 0 {
+		return
+	}
 	if rt.localBindCache == nil {
-		rt.localBindCache = make(map[uintptr]map[string]Value)
+		rt.localBindCache = make(map[int]map[string]Value)
 	}
-	if rt.localBindCache[key] == nil {
-		rt.localBindCache[key] = make(map[string]Value)
+	if rt.localBindCache[localID] == nil {
+		rt.localBindCache[localID] = make(map[string]Value)
 	}
-	rt.localBindCache[key][name] = val
+	rt.localBindCache[localID][name] = val
+}
+
+func (rt *Runtime) newLocalID() int {
+	rt.nextLocalID++
+	return rt.nextLocalID
 }
 
 func (rt *Runtime) fieldEvalScope(it Value) *Scope {
@@ -451,16 +451,6 @@ func (rt *Runtime) addRecord(v RecordStmt, scope *Scope) error {
 			e.It = ItVal{Val: it, I: i, N: len(its)}
 		}
 		for _, fd := range fields {
-			if fd.Name == "parts" {
-				if list, ok := fd.E.(ListE); ok {
-					for _, item := range list.Items {
-						if id, ok := item.(Ident); ok {
-							e.Parts = append(e.Parts, &PartState{Name: string(id), E: e, Opacity: 1})
-						}
-					}
-				}
-				continue
-			}
 			f := e.field(fd.Name)
 			f.Def = fd.E
 			f.Rate = fd.Rate
@@ -498,26 +488,6 @@ func (rt *Runtime) mergeRecord(v RecordStmt) error {
 			continue
 		}
 		for _, e := range grp.Items {
-			if fd.Name == "parts" {
-				if list, ok := fd.E.(ListE); ok {
-					seen := map[string]bool{}
-					for _, p := range e.Parts {
-						seen[p.Name] = true
-					}
-					for _, item := range list.Items {
-						id, ok := item.(Ident)
-						if !ok {
-							continue
-						}
-						name := string(id)
-						if seen[name] {
-							continue
-						}
-						e.Parts = append(e.Parts, &PartState{Name: name, E: e, Opacity: 1})
-					}
-				}
-				continue
-			}
 			if _, exists := e.Fields[fd.Name]; exists {
 				continue
 			}
@@ -682,10 +652,11 @@ func (rt *Runtime) addFamily(v FamilyStmt, scope *Scope) error {
 			cols[local.Name] = local
 		}
 		itVal := ItVal{
-			Val:  idxVal,
-			I:    idxPos,
-			N:    len(indices),
-			Cols: cols,
+			Val:     idxVal,
+			I:       idxPos,
+			N:       len(indices),
+			Cols:    cols,
+			LocalID: rt.newLocalID(),
 		}
 
 		// Create a proxy entity for this instance in the family group
@@ -731,13 +702,13 @@ func (rt *Runtime) addFamily(v FamilyStmt, scope *Scope) error {
 			fam.MemberAt[actualIdx] = memMap
 		}
 		// Also update the proxy's It to have the sibling refs
-		proxy.It = ItVal{Val: idxVal, I: idxPos, N: len(indices), Cols: cols}
+		proxy.It = ItVal{Val: idxVal, I: idxPos, N: len(indices), Cols: cols, LocalID: itVal.LocalID}
 		// Update all member entities' It as well
 		for _, mem := range v.Members {
 			entityName := familyMemberName(v.Name, actualIdx, mem.Name)
 			if grp, ok := rt.Groups[entityName]; ok {
 				for _, e := range grp.Items {
-					e.It = ItVal{Val: idxVal, I: idxPos, N: len(indices), Cols: cols}
+					e.It = ItVal{Val: idxVal, I: idxPos, N: len(indices), Cols: cols, LocalID: itVal.LocalID}
 				}
 			}
 		}
@@ -765,16 +736,6 @@ func (rt *Runtime) addRecordWithIt(v RecordStmt, itVal ItVal) error {
 	e.It = itVal
 
 	for _, fd := range v.Fields {
-		if fd.Name == "parts" {
-			if list, ok := fd.E.(ListE); ok {
-				for _, item := range list.Items {
-					if id, ok := item.(Ident); ok {
-						e.Parts = append(e.Parts, &PartState{Name: string(id), E: e, Opacity: 1})
-					}
-				}
-			}
-			continue
-		}
 		f := e.field(fd.Name)
 		f.Def = fd.E
 		f.Rate = fd.Rate
@@ -959,8 +920,6 @@ func (rt *Runtime) resolveStarBase(e Expr, binds map[string]Value) (ents []*Enti
 		return v.Items, nil, bindName, nil
 	case *Entity:
 		return []*Entity{v}, nil, bindName, nil
-	case partsRef:
-		return nil, v.E.Parts, bindName, nil
 	case []Value:
 		// Broadcasting over a plain list literal (e.g. `val[* as i]`) is not
 		// supported; broadcast targets must be groups, entities, or parts.
@@ -1049,17 +1008,6 @@ func (rt *Runtime) starChoices(base Value) ([]starChoice, error) {
 			it = existing
 		}
 		return []starChoice{{index: 0.0, bind: 0.0, it: it}}, nil
-	case partsRef:
-		out := make([]starChoice, len(v.E.Parts))
-		for i := range v.E.Parts {
-			idx := float64(i)
-			out[i] = starChoice{
-				index: idx,
-				bind:  idx,
-				it:    ItVal{Val: v.E.Parts[i], I: i, N: len(v.E.Parts)},
-			}
-		}
-		return out, nil
 	}
 	return nil, fmt.Errorf("cannot broadcast over %T", base)
 }
@@ -1352,6 +1300,8 @@ func (rt *Runtime) expandRow(row Row, w winState, start, dur float64, binds map[
 		return rt.expandEnter(row, w, mkAnim)
 	case "enter_broadcast":
 		return rt.expandEnterBroadcast(row, w, mkAnim)
+	case "highlight":
+		return rt.expandHighlight(row, w, mkAnim)
 	case "arrow":
 		// handled below
 	default:
@@ -1432,6 +1382,121 @@ func (rt *Runtime) expandArrow(row Row, w winState, mk func(from, to float64, eb
 		rt.Anims = append(rt.Anims, a)
 	}
 	return nil
+}
+
+// transientEnvelope maps eased progress u in [0,1] to a there-and-back amplitude
+// (0 at the ends, 1 in the middle) so a modifier row lights its channel up and
+// settles it back to rest within the window.
+func transientEnvelope(u float64) float64 {
+	return math.Sin(math.Pi * clamp01(u))
+}
+
+// enlargePeak is the scale a transient `enlarge` modifier swells a span to at the
+// envelope's midpoint before settling back to 1.
+const enlargePeak = 1.5
+
+// expandHighlight compiles a transient text modifier (`| wiggle | t.sub("x")`).
+// The named channel is driven through transientEnvelope and left at rest — unlike
+// the persistent `->` arrow that sets-and-holds.
+func (rt *Runtime) expandHighlight(row Row, w winState, mk func(from, to float64, eb map[string]Value) *Anim) error {
+	binds := mk(0, 0, nil).Binds
+	variants, err := rt.expandExprStars(row.Op.LHS, binds)
+	if err != nil {
+		return fmt.Errorf("line %d: %v", row.Line, err)
+	}
+	channel := highlightChannel[row.Op.Highlight]
+	for k, variant := range variants {
+		v, err := (&Scope{rt: rt, binds: variant.binds}).Eval(variant.expr)
+		if err != nil {
+			return fmt.Errorf("line %d: %v", row.Line, err)
+		}
+		p, ok := v.(*PartState)
+		if !ok {
+			return fmt.Errorf("line %d: transient modifier %q applies to a text span; select one with `text.sub(\"...\")`", row.Line, row.Op.Highlight)
+		}
+		from := w.from + float64(k)*w.stagger
+		a := mk(from, w.to, variant.binds)
+		fillHighlight(a, p, channel)
+		rt.Anims = append(rt.Anims, a)
+	}
+	return nil
+}
+
+// fillHighlight drives one part channel through the transient envelope. Every
+// channel returns to its rest value at the window's end: 0 for the rule/shake
+// channels, 1 for scale, and the span's inherited colour for a flash.
+func fillHighlight(a *Anim, p *PartState, channel string) {
+	clearPostOnStart := func(ref Ref) {
+		a.Start = func(a *Anim, rt *Runtime) error {
+			rt.clearPost(ref.Key())
+			return nil
+		}
+	}
+	switch channel {
+	case "color":
+		ref := PartColorRef{P: p}
+		a.Targets = []Ref{ref}
+		target := namedColors["yellow"]
+		var (
+			base  Color
+			rest  Value
+			hadPC bool
+		)
+		a.Start = func(a *Anim, rt *Runtime) error {
+			rt.clearPost(ref.Key())
+			rest = p.Color
+			hadPC = p.Color != nil
+			base, _ = asColor(ref.Get())
+			return nil
+		}
+		a.Update = func(a *Anim, rt *Runtime, u float64) {
+			env := transientEnvelope(u)
+			if env < 1e-4 {
+				if hadPC {
+					p.Color = rest
+				} else {
+					p.Color = nil
+				}
+				return
+			}
+			p.Color = lerpValue(base, target, env)
+		}
+	case "scale":
+		ref := partFloatRef{P: p, Attr: "scale"}
+		a.Targets = []Ref{ref}
+		clearPostOnStart(ref)
+		a.Update = func(a *Anim, rt *Runtime, u float64) {
+			ref.Set(1 + (enlargePeak-1)*transientEnvelope(u))
+		}
+	case "strike", "underline":
+		// Sweep the rule across the span: the head (right edge) wipes on
+		// left→right over the first half of the window, then the tail (left
+		// edge) chases it over the second half, so the line enters on one side
+		// and leaves on the other rather than retreating the way it came. Both
+		// edges meet at the far side and the rule clears itself by the end.
+		ref := partFloatRef{P: p, Attr: channel}
+		a.Targets = []Ref{ref}
+		setTail := func(v float64) { p.UnderlineTail = v }
+		if channel == "strike" {
+			setTail = func(v float64) { p.StrikeTail = v }
+		}
+		a.Update = func(a *Anim, rt *Runtime, u float64) {
+			head, tail := clamp01(2*u), clamp01(2*u-1)
+			if u >= 0.999 {
+				head, tail = 0, 0 // settle to a clean, empty rest
+			}
+			ref.Set(head)
+			setTail(tail)
+		}
+		clearPostOnStart(ref)
+	default: // wiggle — a 0→1→0 amplitude
+		ref := partFloatRef{P: p, Attr: channel}
+		a.Targets = []Ref{ref}
+		clearPostOnStart(ref)
+		a.Update = func(a *Anim, rt *Runtime, u float64) {
+			ref.Set(transientEnvelope(u))
+		}
+	}
 }
 
 // litVal is an Expr that evaluates to a captured Value verbatim. It lets the
@@ -1609,11 +1674,8 @@ func (rt *Runtime) resolveRef(lhs Expr, binds map[string]Value) (Ref, string, er
 			}
 			return FieldRef{E: b, F: b.field(v.Name)}, "", nil
 		case *PartState:
-			switch v.Name {
-			case "color":
-				return PartColorRef{P: b}, "", nil
-			case "opacity":
-				return PartOpacityRef{P: b}, "", nil
+			if ref, ok := partRefFor(b, v.Name); ok {
+				return ref, "", nil
 			}
 		case FamilyInstance:
 			// e.g. roots[i].mark — not valid as a tween target without a field

@@ -90,7 +90,7 @@ with `.i` (index) and `.n` (count). Multiple `[*]` bind `it.0`, `it.1`, … left
 their indices also read as `i j k l`. Both sides of `->` may broadcast.
 
 ```
-| stagger .1s | morph | parts[*] -> targets[i]
+| stagger .1s | morph | dots[*] -> targets[i]
 | grid[*][*].color -> (i+j) % 2 == 0 ? color.red : color.white
 ```
 

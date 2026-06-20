@@ -368,7 +368,7 @@ func (rt *Runtime) expandMorph(row Row, w winState, mk func(from, to float64, eb
 		} else {
 			it.Val = srcE
 			if iv, ok := srcE.It.(ItVal); ok {
-				it = ItVal{Val: iv.Val, I: k, N: n, Cols: iv.Cols}
+				it = ItVal{Val: iv.Val, I: k, N: n, Cols: iv.Cols, LocalID: iv.LocalID}
 			}
 		}
 		from := w.from + float64(k)*w.stagger

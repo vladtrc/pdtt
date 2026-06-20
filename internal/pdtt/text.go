@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/golang/freetype/truetype"
@@ -124,63 +125,58 @@ func normalizeTexForTypst(s string) string {
 // ---------- segmentation ----------
 
 type texSeg struct {
-	PartName string
-	Text     string
+	Part *PartState // nil for plain text
+	Text string
 }
 
-var (
-	markupRe   = regexp.MustCompile(`\{(\w+)\}(.*?)\{/\w+\}`)
-	mathSpanRe = regexp.MustCompile(`\$([^$]*)\$`)
-)
+// segmentBySub splits raw into plain runs and emphasised spans, one span per
+// part whose substring is found in the text. Earliest match wins; later parts
+// that would overlap an accepted span are skipped.
+func segmentBySub(raw string, parts []*PartState) []texSeg {
+	type span struct {
+		start, end int
+		p          *PartState
+	}
+	var spans []span
+	for _, p := range parts {
+		if p.Sub == "" {
+			continue
+		}
+		if idx := strings.Index(raw, p.Sub); idx >= 0 {
+			spans = append(spans, span{idx, idx + len(p.Sub), p})
+		}
+	}
+	if len(spans) == 0 {
+		return []texSeg{{Text: raw}}
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
 
-func segmentText(raw string, partNames []string) []texSeg {
-	if locs := markupRe.FindAllStringSubmatchIndex(raw, -1); len(locs) > 0 {
-		var segs []texSeg
-		pos := 0
-		for _, m := range locs {
-			if m[0] > pos {
-				segs = append(segs, texSeg{Text: raw[pos:m[0]]})
-			}
-			segs = append(segs, texSeg{PartName: raw[m[2]:m[3]], Text: raw[m[4]:m[5]]})
-			pos = m[1]
+	var segs []texSeg
+	pos := 0
+	for _, sp := range spans {
+		if sp.start < pos {
+			continue // overlaps an already-emitted span
 		}
-		if pos < len(raw) {
-			segs = append(segs, texSeg{Text: raw[pos:]})
+		if sp.start > pos {
+			segs = append(segs, texSeg{Text: raw[pos:sp.start]})
 		}
-		return segs
+		segs = append(segs, texSeg{Part: sp.p, Text: raw[sp.start:sp.end]})
+		pos = sp.end
 	}
-	if len(partNames) > 0 {
-		if locs := mathSpanRe.FindAllStringSubmatchIndex(raw, -1); len(locs) >= len(partNames) {
-			var segs []texSeg
-			pos := 0
-			for i, m := range locs {
-				name := ""
-				if i < len(partNames) {
-					name = partNames[i]
-				}
-				if m[0] > pos {
-					segs = append(segs, texSeg{Text: raw[pos:m[0]]})
-				}
-				segs = append(segs, texSeg{PartName: name, Text: raw[m[2]:m[3]]})
-				pos = m[1]
-			}
-			if pos < len(raw) {
-				segs = append(segs, texSeg{Text: raw[pos:]})
-			}
-			return segs
-		}
+	if pos < len(raw) {
+		segs = append(segs, texSeg{Text: raw[pos:]})
 	}
-	return []texSeg{{Text: raw}}
+	return segs
 }
 
 // ---------- layout ----------
 
 type LaySeg struct {
-	Part     *PartState // nil for plain text
-	Text     string
-	X, W     float64 // world units, X from line left edge
-	Runes    int
-	Contours [][]Vec // local world-space contours, centered on the line
+	Part   *PartState // nil for plain text
+	Text   string
+	X, W   float64 // world units, X from line left edge
+	Runes  int
+	Glyphs [][][]Vec // local world-space glyphs (each a list of contours), centered on the line
 }
 
 type LayLine struct {
@@ -189,10 +185,11 @@ type LayLine struct {
 }
 
 type TextLayout struct {
-	Lines      []LayLine
-	W, H       float64
-	Em         float64 // world units per reference em
-	TotalRunes int
+	Lines       []LayLine
+	W, H        float64
+	Em          float64 // world units per reference em
+	TotalRunes  int
+	TotalGlyphs int // vector glyph count across all lines, for the Write cascade
 }
 
 func entityText(e *Entity) string {
@@ -231,26 +228,32 @@ func normalizeSegmentForTypst(e *Entity, s string) string {
 	return s
 }
 
-func transformContoursToSegment(contours [][]Vec, bbox Box, worldPerPt float64) [][]Vec {
-	if len(contours) == 0 {
+func transformGlyphsToSegment(glyphs [][][]Vec, bbox Box, worldPerPt float64) [][][]Vec {
+	if len(glyphs) == 0 {
 		return nil
 	}
 	cy := 0.5 * (bbox.Min[1] + bbox.Max[1]) * worldPerPt
-	out := make([][]Vec, 0, len(contours))
-	for _, contour := range contours {
-		if len(contour) == 0 {
-			continue
-		}
-		dst := make([]Vec, len(contour))
-		for i, p := range contour {
-			dst[i] = Vec{
-				(p[0] - bbox.Min[0]) * worldPerPt,
-				// Typst SVG y grows downward; world y grows up. Flip about the
-				// glyph's vertical center so text reads upright.
-				cy - p[1]*worldPerPt,
+	out := make([][][]Vec, 0, len(glyphs))
+	for _, glyph := range glyphs {
+		dstGlyph := make([][]Vec, 0, len(glyph))
+		for _, contour := range glyph {
+			if len(contour) == 0 {
+				continue
 			}
+			dst := make([]Vec, len(contour))
+			for i, p := range contour {
+				dst[i] = Vec{
+					(p[0] - bbox.Min[0]) * worldPerPt,
+					// Typst SVG y grows downward; world y grows up. Flip about the
+					// glyph's vertical center so text reads upright.
+					cy - p[1]*worldPerPt,
+				}
+			}
+			dstGlyph = append(dstGlyph, dst)
 		}
-		out = append(out, dst)
+		if len(dstGlyph) > 0 {
+			out = append(out, dstGlyph)
+		}
 	}
 	return out
 }
@@ -266,20 +269,38 @@ func segmentLayoutTypst(e *Entity, piece string) (LaySeg, error) {
 			W:     measurePx(piece) / refPx * em,
 		}, nil
 	}
-	contours, bbox, err := typstGlyphs(markup, textIsMath(e))
+	// Typst's glyph bbox excludes leading/trailing spaces, so a segment rendered
+	// in isolation (e.g. the " a word" sitting next to an emphasised "{x}..{/x}"
+	// span) would lose its edge spacing and butt against its neighbour. Render the
+	// trimmed core and re-add the measured edge-space width, shifting the glyphs
+	// right by the leading pad so the segment occupies its full advance.
+	core := strings.Trim(markup, " ")
+	lead := len(markup) - len(strings.TrimLeft(markup, " "))
+	trail := len(markup) - len(strings.TrimRight(markup, " "))
+	em := textEm(e)
+	spaceW := measurePx(" ") / refPx * em
+	leadW := float64(lead) * spaceW
+	trailW := float64(trail) * spaceW
+
+	glyphs, bbox, err := typstGlyphs(core, textIsMath(e))
 	if err != nil {
 		return LaySeg{}, err
 	}
-	out := LaySeg{
-		Text:     piece,
-		Runes:    len([]rune(piece)),
-		W:        bbox.Width() * worldPerPt,
-		Contours: transformContoursToSegment(contours, bbox, worldPerPt),
+	segGlyphs := transformGlyphsToSegment(glyphs, bbox, worldPerPt)
+	if leadW > 0 {
+		for _, glyph := range segGlyphs {
+			for _, contour := range glyph {
+				for i := range contour {
+					contour[i][0] += leadW
+				}
+			}
+		}
 	}
-	if !bbox.Valid && strings.TrimSpace(piece) == "" {
-		// typst emits no glyph path for pure whitespace; keep spacing stable.
-		em := textEm(e)
-		out.W = measurePx(piece) / refPx * em
+	out := LaySeg{
+		Text:   piece,
+		Runes:  len([]rune(piece)),
+		W:      leadW + bbox.Width()*worldPerPt + trailW,
+		Glyphs: segGlyphs,
 	}
 	return out, nil
 }
@@ -304,18 +325,15 @@ func textLayoutOf(e *Entity) *TextLayout {
 	if fs == 0 {
 		fs = 48
 	}
-	key := fmt.Sprintf("%s|%s|%g|%g|%t", e.Type, raw, scale, fs, typstInstalled())
+	var subKey strings.Builder
+	for _, p := range e.Parts {
+		subKey.WriteString(p.Sub)
+		subKey.WriteByte('\x00')
+	}
+	useTypst := typstInstalled()
+	key := fmt.Sprintf("%s|%s|%g|%g|%t|%s", e.Type, raw, scale, fs, useTypst, subKey.String())
 	if e.layoutCache != nil && e.layoutKey == key {
 		return e.layoutCache
-	}
-
-	var partNames []string
-	for _, p := range e.Parts {
-		partNames = append(partNames, p.Name)
-	}
-	partByName := map[string]*PartState{}
-	for _, p := range e.Parts {
-		partByName[p.Name] = p
 	}
 
 	em := 0.62 * fs / 48 * scale // world height of one em
@@ -325,8 +343,7 @@ func textLayoutOf(e *Entity) *TextLayout {
 	if textIsMath(e) {
 		segRaw = strings.ReplaceAll(segRaw, `\ `, "\n")
 	}
-	segs := segmentText(segRaw, partNames)
-	useTypst := typstInstalled()
+	segs := segmentBySub(segRaw, e.Parts)
 
 	var lines []LayLine
 	cur := LayLine{}
@@ -365,9 +382,7 @@ func textLayoutOf(e *Entity) *TextLayout {
 				ls = segmentLayoutFallback(e, piece)
 			}
 			ls.X = cur.W
-			if sg.PartName != "" {
-				ls.Part = partByName[sg.PartName]
-			}
+			ls.Part = sg.Part
 			total += ls.Runes
 			cur.W += ls.W
 			cur.Segs = append(cur.Segs, ls)
@@ -385,7 +400,13 @@ func textLayoutOf(e *Entity) *TextLayout {
 	for i := range lines {
 		lines[i].Y = H/2 - (float64(i)+0.5)*lineH
 	}
-	lay := &TextLayout{Lines: lines, W: maxW, H: H, Em: em, TotalRunes: total}
+	totalGlyphs := 0
+	for _, l := range lines {
+		for _, sg := range l.Segs {
+			totalGlyphs += len(sg.Glyphs)
+		}
+	}
+	lay := &TextLayout{Lines: lines, W: maxW, H: H, Em: em, TotalRunes: total, TotalGlyphs: totalGlyphs}
 	e.layoutCache = lay
 	e.layoutKey = key
 	return lay
@@ -419,21 +440,23 @@ func textOutlineContours(e *Entity) [][]Vec {
 	var out [][]Vec
 	for _, line := range lay.Lines {
 		for _, sg := range line.Segs {
-			if len(sg.Contours) == 0 {
+			if len(sg.Glyphs) == 0 {
 				continue
 			}
 			x0 := at[0] - line.W/2 + sg.X
 			y0 := at[1] + line.Y
-			for _, contour := range sg.Contours {
-				if len(contour) == 0 {
-					continue
+			for _, glyph := range sg.Glyphs {
+				for _, contour := range glyph {
+					if len(contour) == 0 {
+						continue
+					}
+					dst := make([]Vec, len(contour))
+					for i, p := range contour {
+						q := Vec{x0 + p[0], y0 + p[1]}
+						dst[i] = rotateAround(q, at, angle)
+					}
+					out = append(out, dst)
 				}
-				dst := make([]Vec, len(contour))
-				for i, p := range contour {
-					q := Vec{x0 + p[0], y0 + p[1]}
-					dst[i] = rotateAround(q, at, angle)
-				}
-				out = append(out, dst)
 			}
 		}
 	}

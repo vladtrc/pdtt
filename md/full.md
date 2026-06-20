@@ -210,7 +210,75 @@ Avoid LaTeX commands unless Typst accepts them. Prefer strings like `"f(x)=x^2"`
 `"x'' + x = 0"`, `"dot x"`.
 
 `tex` and `decimal` are renderer-compatible legacy text types, but generated code
-should use `text` and `typst`.
+should use `text` and `typst`. Plain `text` is drawn in the same Computer-Modern
+letterforms as `typst` math, so prose and formulas share one visual style.
+
+### Multiline, write-on, and emphasis
+
+Text strings take the `\n` escape for line breaks, so one record can hold several
+stacked lines. For longer prose, the `|` block scalar keeps the shape of the text
+visible in the source — the indented body is dedented and its line breaks kept
+verbatim (interior blank lines become empty text lines, surrounding blanks are
+trimmed), with no quoting or `\n` by hand:
+
+```pdtt
+text intro:
+  text: |
+    first line
+    second line
+```
+
+The `draw` field (default 1) reveals text left to right, one line after another —
+the text analogue of drawing a path on. Use the same self-transition as any shape:
+
+```pdtt
+| 1.5s | intro{draw: 0} -> intro      # write the text on, glyph by glyph
+```
+
+Any substring is independently tweenable through `<text>.sub("phrase").<attr>`.
+There is no markup in the text — the span is selected by its literal characters,
+so the prose stays plain (the first match wins; later spans that would overlap an
+earlier one are skipped):
+
+| attr | effect |
+|---|---|
+| `color` | recolour the span |
+| `opacity` | fade the span |
+| `strike` | 0..1 strikethrough rule, drawn left to right |
+| `underline` | 0..1 underline rule, drawn left to right |
+| `scale` | size multiplier about the span centre (1 = normal) |
+| `wiggle` | 0..1 shake amplitude (0 = still) |
+
+A plain `->` arrow **sets and holds**: the span stays recoloured, struck, or
+enlarged after the window.
+
+```pdtt
+text line:
+  text: "you can emphasise a word"
+
+| 0.6s | line.sub("emphasise").color -> color.yellow
+| 0.6s | line.sub("emphasise").scale -> 1.4
+```
+
+For a one-shot highlight that **lights up, then settles back to rest**, use a
+transient modifier cell instead — a bare channel keyword and a target span, no
+arrow and no number. The channel runs through a `0 → peak → 0` envelope over the
+window and is left at its resting value:
+
+| modifier | effect over the window |
+|---|---|
+| `flash` | flash the span to yellow, then back to its colour |
+| `strike` | sweep a strikethrough in, then out |
+| `underline` | sweep an underline in, then out |
+| `enlarge` | swell the span to ~1.5×, then back |
+| `wiggle` | a self-contained shake that settles |
+
+```pdtt
+| 1.0s | smooth | flash  | line.sub("emphasise")
+| 1.0s | smooth | wiggle | line.sub("emphasise")
+```
+
+See `examples/text-features` for both forms — modifiers and arrows — side by side.
 
 ## Time Blocks
 

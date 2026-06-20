@@ -1,12 +1,18 @@
 package pdtt
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -42,18 +48,40 @@ func (c *SceneCompiler) CompileStmts(stmts []Stmt) (*Runtime, error) {
 	return Compile(stmts)
 }
 
-type RenderResult struct {
-	FramesDir string
-	FrameCnt  int
-}
-
 type FrameRenderer struct{}
 
 func NewFrameRenderer() *FrameRenderer {
 	return &FrameRenderer{}
 }
 
-func (r *FrameRenderer) Render(rt *Runtime, cfg Config, trace *Tracer) (*RenderResult, error) {
+// FrameCount returns how many frames a runtime renders at the given fps.
+func FrameCount(rt *Runtime, fps float64) int {
+	return int(rt.Total*fps) + 1
+}
+
+// FrameSink consumes rendered frames as they are produced. MP4 encoding is one
+// sink; tests and public API callers can omit it and still get debug PNG frames.
+type FrameSink interface {
+	WriteFrame(*image.RGBA) error
+}
+
+type RenderResult struct {
+	FramesDir string
+	FrameCnt  int
+	WaitDebug func() error
+}
+
+// pngJob is a single debug frame handed off to a background writer. The pixels
+// are a private copy because the renderer reuses its draw buffer every frame.
+type pngJob struct {
+	path string
+	pix  []byte
+	w, h int
+}
+
+// Render renders every frame, optionally streaming each frame into a sink while
+// debug PNGs are written by background workers off the critical path.
+func (r *FrameRenderer) Render(rt *Runtime, cfg Config, trace *Tracer, sink FrameSink) (*RenderResult, error) {
 	if err := initFonts(); err != nil {
 		return nil, err
 	}
@@ -63,11 +91,12 @@ func (r *FrameRenderer) Render(rt *Runtime, cfg Config, trace *Tracer) (*RenderR
 	}
 
 	renderer := NewRenderer(cfg.Width, cfg.Height)
-	nFrames := int(rt.Total*cfg.FPS) + 1
+	nFrames := FrameCount(rt, cfg.FPS)
 	fmt.Printf("%s: %s - %.1fs, %d frames, %d anims, %d live fields\n",
 		filepath.Base(cfg.InputPath), rt.SceneName, rt.Total, nFrames, len(rt.Anims), len(rt.liveFields))
 
-	trace.Info("render_start",
+	trace.Info(
+		"render_start",
 		"scene", rt.SceneName,
 		"total_s", rt.Total,
 		"frames", nFrames,
@@ -75,7 +104,29 @@ func (r *FrameRenderer) Render(rt *Runtime, cfg Config, trace *Tracer) (*RenderR
 		"live_fields", len(rt.liveFields),
 	)
 
-	var stepTotal, renderTotal, saveTotal time.Duration
+	// Background PNG writers. Buffered so a brief encode stall does not block
+	// the render loop (and therefore the mp4).
+	jobs := make(chan pngJob, 16)
+	var pngErr error
+	var pngErrOnce sync.Once
+	var wg sync.WaitGroup
+	for i := 0; i < pngWorkerCount(); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				if err := savePNG(j.path, j.pix, j.w, j.h); err != nil {
+					pngErrOnce.Do(func() { pngErr = err })
+				}
+			}
+		}()
+	}
+	pngWait := func() error {
+		wg.Wait()
+		return pngErr
+	}
+
+	var stepTotal, renderTotal, pipeTotal time.Duration
 	var slowestFrame int
 	var slowestMs float64
 
@@ -84,54 +135,99 @@ func (r *FrameRenderer) Render(rt *Runtime, cfg Config, trace *Tracer) (*RenderR
 
 		stepStart := time.Now()
 		if err := rt.Step(t); err != nil {
+			close(jobs)
+			_ = pngWait()
 			return nil, fmt.Errorf("t=%.2fs: %w", t, err)
 		}
 		stepDur := time.Since(stepStart)
 
 		renderStart := time.Now()
 		dc := renderer.Frame(rt)
+		img := dc.Image().(*image.RGBA)
 		renderDur := time.Since(renderStart)
 
-		path := filepath.Join(framesDir, fmt.Sprintf("f%05d.png", k))
-		saveStart := time.Now()
-		if err := dc.SavePNG(path); err != nil {
-			return nil, err
+		// Feed the encoder immediately: the mp4 grows as we render.
+		pipeStart := time.Now()
+		if sink != nil {
+			if err := sink.WriteFrame(img); err != nil {
+				close(jobs)
+				_ = pngWait()
+				return nil, fmt.Errorf("write frame %d: %w", k, err)
+			}
 		}
-		saveDur := time.Since(saveStart)
+		pipeDur := time.Since(pipeStart)
+
+		// Hand the debug PNG to a worker. Copy first — Frame reuses its buffer.
+		pix := make([]byte, len(img.Pix))
+		copy(pix, img.Pix)
+		jobs <- pngJob{
+			path: filepath.Join(framesDir, fmt.Sprintf("f%05d.png", k)),
+			pix:  pix,
+			w:    cfg.Width,
+			h:    cfg.Height,
+		}
 
 		stepTotal += stepDur
 		renderTotal += renderDur
-		saveTotal += saveDur
+		pipeTotal += pipeDur
 
-		frameMs := durMs(stepDur + renderDur + saveDur)
+		frameMs := durMs(stepDur + renderDur + pipeDur)
 		if frameMs >= slowestMs {
 			slowestMs = frameMs
 			slowestFrame = k
 		}
 
-		trace.Info("frame",
+		trace.Info(
+			"frame",
 			"index", k,
 			"t_s", t,
 			"step_ms", durMs(stepDur),
 			"render_ms", durMs(renderDur),
-			"save_ms", durMs(saveDur),
+			"pipe_ms", durMs(pipeDur),
 			"total_ms", frameMs,
 		)
 	}
+	close(jobs)
 
-	trace.Info("render_frames_summary",
+	trace.Info(
+		"render_frames_summary",
 		"frames", nFrames,
 		"step_total_ms", durMs(stepTotal),
 		"render_total_ms", durMs(renderTotal),
-		"save_total_ms", durMs(saveTotal),
+		"pipe_total_ms", durMs(pipeTotal),
 		"slowest_index", slowestFrame,
 		"slowest_ms", slowestMs,
 	)
 
-	return &RenderResult{
-		FramesDir: framesDir,
-		FrameCnt:  nFrames,
-	}, nil
+	return &RenderResult{FramesDir: framesDir, FrameCnt: nFrames, WaitDebug: pngWait}, nil
+}
+
+// pngWorkerCount sizes the debug-PNG pool. Kept small so that running many
+// examples in parallel (make -j render-all) does not oversubscribe the CPU;
+// PNGs are off the critical path, so a couple of workers per process suffice.
+func pngWorkerCount() int {
+	if n := runtime.GOMAXPROCS(0); n < 3 {
+		return 1
+	}
+	return 3
+}
+
+// savePNG encodes a copied RGBA buffer to a PNG file on disk.
+func savePNG(path string, pix []byte, w, h int) error {
+	img := &image.RGBA{
+		Pix:    pix,
+		Stride: w * 4,
+		Rect:   image.Rect(0, 0, w, h),
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	if err := png.Encode(f, img); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 type MP4Encoder struct{}
@@ -140,38 +236,89 @@ func NewMP4Encoder() *MP4Encoder {
 	return &MP4Encoder{}
 }
 
-func (e *MP4Encoder) Encode(cfg Config, trace *Tracer) error {
-	encodeStart := time.Now()
+// MP4Stream is a running ffmpeg process consuming raw RGBA frames on stdin.
+// Frames are encoded as they arrive, so the mp4 is produced concurrently with
+// rendering instead of in a separate pass over PNGs on disk.
+type MP4Stream struct {
+	cmd   *exec.Cmd
+	stdin io.WriteCloser
+	buf   *bufio.Writer
+	out   string
+	trace *Tracer
+	start time.Time
+}
+
+// WriteFrame pushes one frame's raw RGBA bytes to ffmpeg.
+func (s *MP4Stream) WriteFrame(img *image.RGBA) error {
+	_, err := s.buf.Write(img.Pix)
+	return err
+}
+
+// Close flushes remaining frames, closes ffmpeg's stdin, and waits for it to
+// finalize the mp4. Because every frame was already streamed during rendering,
+// this just writes the trailer and returns almost immediately.
+func (s *MP4Stream) Close() error {
+	flushErr := s.buf.Flush()
+	closeErr := s.stdin.Close()
+	waitErr := s.cmd.Wait()
+	if flushErr != nil {
+		return fmt.Errorf("flush frames to ffmpeg: %w", flushErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close ffmpeg stdin: %w", closeErr)
+	}
+	if waitErr != nil {
+		return fmt.Errorf("ffmpeg failed: %w", waitErr)
+	}
+	s.trace.Info(
+		"encode_done",
+		"output", s.out,
+		"duration_ms", durMs(time.Since(s.start)),
+	)
+	return nil
+}
+
+// Start launches ffmpeg reading raw RGBA frames from stdin. It returns
+// (nil, nil) when ffmpeg is unavailable so callers can render frames anyway.
+func (e *MP4Encoder) Start(cfg Config, trace *Tracer) (*MP4Stream, error) {
 	ffmpegPath, err := exec.LookPath("ffmpeg")
 	if err != nil {
 		fmt.Println("warning: ffmpeg not found; skipping mp4 encoding")
-		trace.Info("encode_skipped",
-			"reason", "ffmpeg not found",
-			"duration_ms", durMs(time.Since(encodeStart)),
-		)
-		return nil
+		trace.Info("encode_skipped", "reason", "ffmpeg not found")
+		return nil, nil
 	}
 
 	outPath := filepath.Join(cfg.OutputDir, "result.mp4")
 	cmd := exec.Command(
 		ffmpegPath,
 		"-y",
+		"-f", "rawvideo",
+		"-pixel_format", "rgba",
+		"-video_size", fmt.Sprintf("%dx%d", cfg.Width, cfg.Height),
 		"-framerate", fmt.Sprintf("%.4f", cfg.FPS),
-		"-i", filepath.Join(cfg.OutputDir, "frames", "f%05d.png"),
+		"-i", "-",
 		"-pix_fmt", "yuv420p",
 		"-movflags", "+faststart",
 		outPath,
 	)
-	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("ffmpeg failed: %w", err)
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
 	}
-	trace.Info("encode_done",
-		"output", outPath,
-		"duration_ms", durMs(time.Since(encodeStart)),
-	)
-	return nil
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start ffmpeg: %w", err)
+	}
+
+	return &MP4Stream{
+		cmd:   cmd,
+		stdin: stdin,
+		buf:   bufio.NewWriterSize(stdin, 1<<20),
+		out:   outPath,
+		trace: trace,
+		start: time.Now(),
+	}, nil
 }
 
 type App struct {
@@ -219,7 +366,8 @@ func (a *App) run() error {
 	defer func() { _ = trace.Close() }()
 
 	pipelineStart := time.Now()
-	trace.Info("pipeline_start",
+	trace.Info(
+		"pipeline_start",
 		"input", a.cfg.InputPath,
 		"output", a.cfg.OutputDir,
 		"fps", a.cfg.FPS,
@@ -232,7 +380,8 @@ func (a *App) run() error {
 	if err != nil {
 		return err
 	}
-	trace.Info("parse_done",
+	trace.Info(
+		"parse_done",
 		"duration_ms", durMs(time.Since(parseStart)),
 		"stmts", len(stmts),
 	)
@@ -242,8 +391,9 @@ func (a *App) run() error {
 	if err != nil {
 		return err
 	}
-	nFrames := int(rt.Total*a.cfg.FPS) + 1
-	trace.Info("compile_done",
+	nFrames := FrameCount(rt, a.cfg.FPS)
+	trace.Info(
+		"compile_done",
 		"duration_ms", durMs(time.Since(compileStart)),
 		"scene", rt.SceneName,
 		"total_s", rt.Total,
@@ -252,13 +402,32 @@ func (a *App) run() error {
 		"live_fields", len(rt.liveFields),
 	)
 
+	// Launch ffmpeg up front so it encodes frames as the renderer produces
+	// them, rather than in a separate pass once every PNG is on disk.
+	stream, err := a.encoder.Start(a.cfg, trace)
+	if err != nil {
+		return err
+	}
+
 	renderStart := time.Now()
-	if _, err := a.renderer.Render(rt, a.cfg, trace); err != nil {
+	result, err := a.renderer.Render(rt, a.cfg, trace, stream)
+	if err != nil {
+		if stream != nil {
+			_ = stream.Close()
+		}
 		return err
 	}
 	trace.Info("render_done", "duration_ms", durMs(time.Since(renderStart)), "frames", nFrames)
 
-	if err := a.encoder.Encode(a.cfg, trace); err != nil {
+	// Finalize the mp4 first — its frames are already encoded, so this returns
+	// fast — then wait for the off-path debug PNGs to finish writing.
+	if stream != nil {
+		if err := stream.Close(); err != nil {
+			_ = result.WaitDebug()
+			return err
+		}
+	}
+	if err := result.WaitDebug(); err != nil {
 		return err
 	}
 

@@ -111,10 +111,25 @@ func lexExpr(src string) ([]token, error) {
 			var b strings.Builder
 			j := i + 1
 			for j < len(src) && src[j] != '"' {
-				if src[j] == '\\' && j+1 < len(src) && (src[j+1] == '"' || src[j+1] == '\\') {
-					b.WriteByte(src[j+1])
-					j += 2
-					continue
+				if src[j] == '\\' && j+1 < len(src) {
+					switch src[j+1] {
+					case '"', '\\':
+						b.WriteByte(src[j+1])
+						j += 2
+						continue
+					case 'n':
+						b.WriteByte('\n')
+						j += 2
+						continue
+					case 't':
+						b.WriteByte('\t')
+						j += 2
+						continue
+					case 'r':
+						b.WriteByte('\r')
+						j += 2
+						continue
+					}
 				}
 				b.WriteByte(src[j])
 				j++

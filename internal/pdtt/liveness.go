@@ -401,7 +401,7 @@ func (w attrDepWalker) addAttrDeps(expr AttrE) {
 		case *Entity:
 			w.deps[entityAttrDepKey(b, expr.Name)] = true
 		case *PartState:
-			w.deps[b.E.Name+".parts."+b.Name+"."+expr.Name] = true
+			w.deps[b.E.Name+".parts."+b.key()+"."+expr.Name] = true
 		}
 	}
 	if val, err := w.scope.Eval(expr); err == nil {

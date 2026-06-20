@@ -462,7 +462,8 @@ func (r *Renderer) drawText(dc *gg.Context, c cam, e *Entity, tf Transform) {
 		return
 	}
 	at := tf.At
-	emPx := lay.Em * c.ppu
+	em := lay.Em
+	emPx := em * c.ppu
 	if emPx < 1 {
 		return
 	}
@@ -471,50 +472,355 @@ func (r *Renderer) drawText(dc *gg.Context, c cam, e *Entity, tf Transform) {
 		dc.SetFontFace(faceAt(emPx * refPx / 48.0)) // em world ≈ 48pt at ref scale
 	}
 
+	// `draw` (default 1) reveals the text like manim's Write: glyphs are traced
+	// on as outlines and then filled, cascading left to right (and top to bottom),
+	// each letter overlapping the next. This replaces a crude horizontal wipe — at
+	// no point is a glyph cut by a hard vertical edge.
+	draw := clamp01(e.fnum("draw"))
+	var t float64
+	if e.rt != nil {
+		t = e.rt.T
+	}
+
+	// Fallback (no typst → no vector glyphs): keep the simple rune-proportional
+	// horizontal wipe, one line after another.
+	if lay.TotalGlyphs == 0 {
+		r.drawTextWiped(dc, c, lay, at, em, emPx, draw, baseCol, op, t, tf.Angle)
+		return
+	}
+
+	strokeW := math.Max(1.0, 0.035*em*c.ppu)
+	glyphIdx := 0
 	for _, line := range lay.Lines {
+		wy := at[1] + line.Y
 		for _, sg := range line.Segs {
-			text := sg.Text
 			col := baseCol
 			segOp := op
+			xf := identityXform
+			wx := at[0] - line.W/2 + sg.X
 			if sg.Part != nil {
-				if sg.Part.Color != nil {
-					if pc, err := asColor(sg.Part.Color); err == nil {
+				p := sg.Part
+				if p.Color != nil {
+					if pc, err := asColor(p.Color); err == nil {
 						col = pc
 					}
 				}
-				segOp *= sg.Part.Opacity
+				segOp *= p.Opacity
+				xf = partXform(p, Vec{wx + sg.W/2, wy}, em, t)
+			}
+			if segOp <= 0.001 {
+				glyphIdx += len(sg.Glyphs)
+				continue
+			}
+			toScreen := func(p Vec) (float64, float64) {
+				wp := xf(Vec{wx + p[0], wy + p[1]})
+				wp = rotateAround(wp, at, tf.Angle)
+				return c.sx(wp)
+			}
+			sumGp := 0.0
+			for _, glyph := range sg.Glyphs {
+				gp := 1.0
+				if draw < 1 {
+					gp = writeGlyphProgress(draw, glyphIdx, lay.TotalGlyphs)
+				}
+				glyphIdx++
+				sumGp += gp
+				if gp <= 0 {
+					continue
+				}
+				r.drawGlyphWrite(dc, glyph, toScreen, col, segOp, gp, strokeW)
+			}
+			if sg.Part != nil {
+				// Rules retreat with the span's reveal (mean glyph progress) so
+				// strike/underline don't outlive the letters when text un-writes.
+				reveal := 1.0
+				if draw < 1 && len(sg.Glyphs) > 0 {
+					reveal = sumGp / float64(len(sg.Glyphs))
+				}
+				r.drawPartRules(dc, c, sg.Part, Vec{wx, wy}, sg.W, em, col, segOp, xf, at, tf.Angle, reveal)
+			}
+		}
+	}
+}
+
+// writeLagRatio controls how much consecutive glyphs overlap as they write on.
+// 1 ⇒ fully sequential (one finishes before the next starts); smaller ⇒ more
+// overlap. ~0.4 gives a lively cascade that still reads letter by letter.
+const writeLagRatio = 0.4
+
+// writeGlyphProgress maps the entity-wide draw value (0..1) to the local 0..1
+// reveal progress of glyph i of n, staggered so glyphs overlap by writeLagRatio.
+func writeGlyphProgress(draw float64, i, n int) float64 {
+	if n <= 1 {
+		return draw
+	}
+	span := 1.0 / (1.0 + float64(n-1)*writeLagRatio)
+	start := float64(i) * writeLagRatio * span
+	return clamp01((draw - start) / span)
+}
+
+// drawGlyphWrite renders one glyph at local progress gp (0..1): the outline is
+// traced as a stroke over the first writeBorderPortion of progress, then the fill
+// fades in while the stroke fades out — manim's DrawBorderThenFill.
+const writeBorderPortion = 0.6
+
+func (r *Renderer) drawGlyphWrite(dc *gg.Context, glyph [][]Vec, toScreen func(Vec) (float64, float64), col Color, segOp, gp, strokeW float64) {
+	fillGlyph := func(alpha float64) {
+		setColor(dc, col, alpha)
+		dc.SetFillRuleEvenOdd()
+		for _, contour := range glyph {
+			if len(contour) == 0 {
+				continue
+			}
+			for i, p := range contour {
+				x, y := toScreen(p)
+				if i == 0 {
+					dc.MoveTo(x, y)
+				} else {
+					dc.LineTo(x, y)
+				}
+			}
+			dc.ClosePath()
+		}
+		dc.Fill()
+		dc.SetFillRuleWinding()
+	}
+
+	if gp >= 1 {
+		fillGlyph(segOp)
+		return
+	}
+
+	traceFrac := clamp01(gp / writeBorderPortion)
+	fillOp := clamp01((gp - writeBorderPortion) / (1 - writeBorderPortion))
+	if fillOp > 0.001 {
+		fillGlyph(segOp * fillOp)
+	}
+	// Stroke the outline up to traceFrac of its length, fading out as the fill
+	// arrives so the two phases hand off cleanly.
+	strokeOp := segOp * (1 - fillOp)
+	if strokeOp <= 0.001 {
+		return
+	}
+	strokes := glyphStrokePartial(glyph, traceFrac)
+	if len(strokes) == 0 {
+		return
+	}
+	setColor(dc, col, strokeOp)
+	dc.SetLineWidth(strokeW)
+	for _, s := range strokes {
+		for i, p := range s {
+			x, y := toScreen(p)
+			if i == 0 {
+				dc.MoveTo(x, y)
+			} else {
+				dc.LineTo(x, y)
+			}
+		}
+		dc.Stroke()
+	}
+}
+
+// closedLoop returns ct with its first point repeated at the end so the closing
+// segment counts toward the traced outline.
+func closedLoop(ct []Vec) []Vec {
+	if len(ct) < 2 || ct[0] == ct[len(ct)-1] {
+		return ct
+	}
+	out := make([]Vec, len(ct)+1)
+	copy(out, ct)
+	out[len(ct)] = ct[0]
+	return out
+}
+
+func contourPerimeter(ct []Vec) float64 {
+	loop := closedLoop(ct)
+	total := 0.0
+	for i := 1; i < len(loop); i++ {
+		total += math.Hypot(loop[i][0]-loop[i-1][0], loop[i][1]-loop[i-1][1])
+	}
+	return total
+}
+
+// glyphStrokePartial returns the polylines tracing the glyph's outline up to
+// fraction frac of its total perimeter. Each contour is a separate pen stroke
+// (the pen lifts between counters), drawn in order so the trace flows naturally.
+func glyphStrokePartial(glyph [][]Vec, frac float64) [][]Vec {
+	frac = clamp01(frac)
+	if frac <= 0 {
+		return nil
+	}
+	total := 0.0
+	for _, ct := range glyph {
+		total += contourPerimeter(ct)
+	}
+	if total <= 0 {
+		return nil
+	}
+	target := frac * total
+	var out [][]Vec
+	acc := 0.0
+	for _, ct := range glyph {
+		if len(ct) < 2 {
+			continue
+		}
+		loop := closedLoop(ct)
+		seg := []Vec{loop[0]}
+		done := false
+		for i := 1; i < len(loop); i++ {
+			d := math.Hypot(loop[i][0]-loop[i-1][0], loop[i][1]-loop[i-1][1])
+			if d <= 0 {
+				continue
+			}
+			if acc+d >= target {
+				s := (target - acc) / d
+				seg = append(seg, Vec{
+					loop[i-1][0] + (loop[i][0]-loop[i-1][0])*s,
+					loop[i-1][1] + (loop[i][1]-loop[i-1][1])*s,
+				})
+				done = true
+				break
+			}
+			acc += d
+			seg = append(seg, loop[i])
+		}
+		if len(seg) >= 2 {
+			out = append(out, seg)
+		}
+		if done {
+			break
+		}
+	}
+	return out
+}
+
+// drawTextWiped is the no-typst fallback reveal: a rune-proportional horizontal
+// wipe of the freetype-rendered string, one line after another.
+func (r *Renderer) drawTextWiped(dc *gg.Context, c cam, lay *TextLayout, at Vec, em, emPx, draw float64, baseCol Color, op, t, angle float64) {
+	totalRunes := lay.TotalRunes
+	if totalRunes <= 0 {
+		totalRunes = 1
+	}
+	revealRunes := draw * float64(totalRunes)
+	canClip := math.Abs(angle) < 1e-6
+	consumed := 0.0
+	for _, line := range lay.Lines {
+		lineRunes := 0
+		for _, sg := range line.Segs {
+			lineRunes += sg.Runes
+		}
+		frac := 1.0
+		if draw < 1 {
+			if lineRunes <= 0 {
+				frac = 1
+			} else {
+				frac = clamp01((revealRunes - consumed) / float64(lineRunes))
+			}
+		}
+		consumed += float64(lineRunes)
+		if frac <= 0 {
+			continue
+		}
+		wy := at[1] + line.Y
+		clipped := false
+		if frac < 1 && canClip {
+			left := at[0] - line.W/2
+			right := left + frac*line.W
+			x0, y0 := c.sx(Vec{left, wy + em})
+			x1, y1 := c.sx(Vec{right, wy - em})
+			dc.DrawRectangle(math.Min(x0, x1), math.Min(y0, y1), math.Abs(x1-x0), math.Abs(y1-y0))
+			dc.Clip()
+			clipped = true
+		}
+		for _, sg := range line.Segs {
+			col := baseCol
+			segOp := op
+			xf := identityXform
+			wx := at[0] - line.W/2 + sg.X
+			if sg.Part != nil {
+				p := sg.Part
+				if p.Color != nil {
+					if pc, err := asColor(p.Color); err == nil {
+						col = pc
+					}
+				}
+				segOp *= p.Opacity
+				xf = partXform(p, Vec{wx + sg.W/2, wy}, em, t)
 			}
 			if segOp <= 0.001 {
 				continue
 			}
-			wx := at[0] - line.W/2 + sg.X
-			wy := at[1] + line.Y
 			setColor(dc, col, segOp)
-			if len(sg.Contours) > 0 {
-				dc.SetFillRuleEvenOdd()
-				for _, contour := range sg.Contours {
-					if len(contour) == 0 {
-						continue
-					}
-					for i, p := range contour {
-						wp := rotateAround(Vec{wx + p[0], wy + p[1]}, at, tf.Angle)
-						x, y := c.sx(wp)
-						if i == 0 {
-							dc.MoveTo(x, y)
-						} else {
-							dc.LineTo(x, y)
-						}
-					}
-					dc.ClosePath()
-				}
-				dc.Fill()
-				dc.SetFillRuleWinding()
-				continue
+			x, y := c.sx(xf(Vec{wx, wy}))
+			dc.DrawString(sg.Text, x, y+0.35*emPx)
+			if sg.Part != nil {
+				r.drawPartRules(dc, c, sg.Part, Vec{wx, wy}, sg.W, em, col, segOp, xf, at, angle, 1)
 			}
-			x, y := c.sx(Vec{wx, wy})
-			dc.DrawString(text, x, y+0.35*emPx)
+		}
+		if clipped {
+			dc.ResetClip()
 		}
 	}
+}
+
+// xform maps a world point through a per-segment affine (scale + wiggle).
+type xform func(Vec) Vec
+
+func identityXform(p Vec) Vec { return p }
+
+// partXform builds the scale + wiggle transform for an emphasised span, centred
+// on the span. Wiggle is a plain 0..1 amplitude: the shimmer phase is wall-clock
+// driven, while the rise-and-settle envelope is owned by whatever animates the
+// channel (the transient `| wiggle |` modifier sweeps it 0→1→0).
+func partXform(p *PartState, center Vec, em, t float64) xform {
+	s := p.scaleOr1()
+	rot := 0.0
+	if p.Wiggle > 1e-6 {
+		amp := clamp01(p.Wiggle)
+		phase := t * 2 * math.Pi * 6          // 6 Hz shimmer driven by wall-clock
+		rot = amp * 0.16 * math.Sin(phase)    // ±~9° rock
+		s *= 1 + amp*0.12*math.Sin(phase+1.7) // slight breathing
+	}
+	if math.Abs(s-1) < 1e-6 && math.Abs(rot) < 1e-9 {
+		return identityXform
+	}
+	cs, sn := math.Cos(rot), math.Sin(rot)
+	return func(q Vec) Vec {
+		dx := (q[0] - center[0]) * s
+		dy := (q[1] - center[1]) * s
+		return Vec{center[0] + dx*cs - dy*sn, center[1] + dx*sn + dy*cs}
+	}
+}
+
+// drawPartRules strokes the strikethrough / underline rules across an emphasised
+// span. Each grows left to right with its 0..1 progress, in the span's colour,
+// and rides the same scale/wiggle transform as the glyphs. `reveal` (the span's
+// Write progress, 0..1) caps how far the rule extends so it retreats together
+// with the glyphs when the text un-writes, instead of lingering as a floating line.
+func (r *Renderer) drawPartRules(dc *gg.Context, c cam, p *PartState, leftMid Vec, w, em float64, col Color, op float64, xf xform, at Vec, angle, reveal float64) {
+	// head/tail are the rule's right/left edges as 0..1 fractions of the span;
+	// a persistent fill is tail=0, head=v, while the transient sweep drives both.
+	rule := func(head, tail, yOff float64) {
+		head = clamp01(math.Min(head, reveal))
+		tail = clamp01(tail)
+		if head-tail <= 0.001 || w <= 0 {
+			return
+		}
+		y := leftMid[1] + yOff*em
+		a := xf(Vec{leftMid[0] + w*tail, y})
+		b := xf(Vec{leftMid[0] + w*head, y})
+		a = rotateAround(a, at, angle)
+		b = rotateAround(b, at, angle)
+		ax, ay := c.sx(a)
+		bx, by := c.sx(b)
+		setColor(dc, col, op)
+		dc.SetLineWidth(math.Max(1.4, 0.05*em*c.ppu))
+		dc.MoveTo(ax, ay)
+		dc.LineTo(bx, by)
+		dc.Stroke()
+	}
+	rule(p.Strike, p.StrikeTail, -0.03)       // through the x-height middle
+	rule(p.Underline, p.UnderlineTail, -0.34) // just under the baseline
 }
 
 // warped sample of a grid point

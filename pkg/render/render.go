@@ -1,7 +1,11 @@
 // Package render exposes pdtt's core pipeline as a public API.
 package render
 
-import "github.com/vladtrc/pdtt/internal/pdtt"
+import (
+	"path/filepath"
+
+	"github.com/vladtrc/pdtt/internal/pdtt"
+)
 
 // Config mirrors pdtt.Config for callers outside the module.
 type Config struct {
@@ -37,15 +41,23 @@ func Scene(src string, outDir string, cfg Config) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	res, err := pdtt.NewFrameRenderer().Render(rt, pdtt.Config{
+	pcfg := pdtt.Config{
 		InputPath: "scene.pdtt",
 		OutputDir: outDir,
 		FPS:       cfg.FPS,
 		Width:     cfg.Width,
 		Height:    cfg.Height,
-	}, nil)
+	}
+	// No mp4 stream: this entry point only writes PNG frames.
+	result, err := pdtt.NewFrameRenderer().Render(rt, pcfg, nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	return &Result{FramesDir: res.FramesDir, FrameCnt: res.FrameCnt}, nil
+	if err := result.WaitDebug(); err != nil {
+		return nil, err
+	}
+	return &Result{
+		FramesDir: filepath.Clean(result.FramesDir),
+		FrameCnt:  result.FrameCnt,
+	}, nil
 }

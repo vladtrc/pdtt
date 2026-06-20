@@ -75,10 +75,15 @@ type RowMod struct {
 }
 
 type RowOp struct {
-	Kind       string // "arrow" | "enter"
+	Kind       string // "arrow" | "enter" | "highlight"
 	LHS        Expr
 	RHS        Expr
 	Transition string // optional transition prefix in op cell
+
+	// highlight: a transient text modifier (`| wiggle | t.sub("x")`). The named
+	// channel is driven through a 0→peak→0 envelope over the window and left at
+	// rest — distinct from the persistent `->` form that sets-and-holds.
+	Highlight string
 
 	// enter: `obj{field: expr, …} -> obj` — a self-transition. Snap the named
 	// object to a phantom copy with these fields overridden, then tween every
@@ -128,6 +133,17 @@ var transitionNames = map[string]bool{
 	"fade_in": true,
 	"draw":    true,
 	"write":   true,
+}
+
+// highlightChannel maps a transient text-modifier keyword to the part channel it
+// drives. A modifier cell (`| wiggle | t.sub("x")`) animates that channel through
+// a there-and-back envelope, unlike the persistent `->` arrow that sets-and-holds.
+var highlightChannel = map[string]string{
+	"flash":     "color",
+	"strike":    "strike",
+	"underline": "underline",
+	"enlarge":   "scale",
+	"wiggle":    "wiggle",
 }
 
 func parseDurToken(tok string) (float64, bool, error) {
@@ -772,6 +788,11 @@ func hasEditCell(cells []string) bool {
 // must be the last cell on the line; every other cell is a modifier. This is
 // the one rule shared by block headers and rows.
 func parseCells(cells []string, ln int) ([]RowMod, *RowOp, error) {
+	// Highlight (transient modifier) row: a channel keyword cell followed by a
+	// trailing subject cell, with no `->`. e.g. `wiggle | tour.sub("x")`.
+	if hi := highlightCellIndex(cells); hi >= 0 && !hasEditCell(cells) {
+		return parseHighlightCells(cells, hi, ln)
+	}
 	var mods []RowMod
 	for i, c := range cells {
 		if c == "" {
@@ -794,6 +815,55 @@ func parseCells(cells []string, ln int) ([]RowMod, *RowOp, error) {
 		mods = append(mods, mod)
 	}
 	return mods, nil, nil
+}
+
+// highlightCellIndex returns the index of the first cell that is a transient
+// modifier keyword (`wiggle`, `flash`, …), or -1 if none.
+func highlightCellIndex(cells []string) int {
+	for i, c := range cells {
+		if _, ok := highlightChannel[c]; ok {
+			return i
+		}
+	}
+	return -1
+}
+
+// parseHighlightCells builds a `highlight` RowOp from a modifier row: the keyword
+// at hiIdx names the channel, the last cell is the target span, and any remaining
+// cells (ease, window, …) are ordinary modifiers.
+func parseHighlightCells(cells []string, hiIdx, ln int) ([]RowMod, *RowOp, error) {
+	last := len(cells) - 1
+	if hiIdx >= last {
+		return nil, nil, fmt.Errorf("line %d: transient modifier %q needs a target span cell, e.g. `%s | text.sub(\"...\")`", ln, cells[hiIdx], cells[hiIdx])
+	}
+	var mods []RowMod
+	for i, c := range cells {
+		if i == hiIdx || i == last {
+			continue
+		}
+		if c == "" {
+			return nil, nil, fmt.Errorf("line %d: empty cell", ln)
+		}
+		if _, ok := highlightChannel[c]; ok {
+			return nil, nil, fmt.Errorf("line %d: only one transient modifier per row (%q and %q)", ln, cells[hiIdx], c)
+		}
+		mod, err := parseModCell(c, ln)
+		if err != nil {
+			return nil, nil, err
+		}
+		switch mod.Kind {
+		case "transition":
+			return nil, nil, fmt.Errorf("line %d: transition modifier %q does not apply to transient text modifiers", ln, mod.Name)
+		case "pair":
+			return nil, nil, fmt.Errorf("line %d: pairing modifier %q does not apply to transient text modifiers", ln, mod.Name)
+		}
+		mods = append(mods, mod)
+	}
+	lhs, err := ParseExpr(cells[last])
+	if err != nil {
+		return nil, nil, fmt.Errorf("line %d: %v", ln, err)
+	}
+	return mods, &RowOp{Kind: "highlight", LHS: lhs, Highlight: cells[hiIdx]}, nil
 }
 
 func parseRow(body string, ln int) (Row, error) {

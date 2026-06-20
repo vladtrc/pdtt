@@ -55,9 +55,10 @@ func snapshotValue(v Value) Value {
 }
 
 type ItVal struct {
-	Val  Value
-	I, N int
-	Cols map[string]Value
+	Val     Value
+	I, N    int
+	Cols    map[string]Value
+	LocalID int
 }
 
 type Value interface{}
@@ -73,10 +74,43 @@ type Field struct {
 }
 
 type PartState struct {
-	Name    string
+	Sub     string // the substring this part spans (selected via `text.sub("...")`)
 	E       *Entity
 	Color   Value // nil = inherit entity color
 	Opacity float64
+
+	// Substring emphasis (manim-inspired), all tweenable per part:
+	//   strike/underline — 0..1 progress of a rule drawn across the span. The
+	//                      value is the rule's right edge (head); the matching
+	//                      *Tail field is its left edge. Persistent `-> v` edits
+	//                      leave the tail at 0 and just fill 0→v from the left;
+	//                      the transient `| modifier |` sweep advances the head
+	//                      then the tail, so the rule enters one side and exits
+	//                      the other instead of retreating the way it came.
+	//   wiggle           — 0..1 shake amplitude (the `| wiggle |` modifier sweeps
+	//                      it up then back to rest for a self-contained shimmer)
+	//   scale            — local size multiplier about the span centre (1 = normal)
+	Strike        float64
+	StrikeTail    float64
+	Underline     float64
+	UnderlineTail float64
+	Wiggle        float64
+	Scale         float64 // 0 is read as 1 (unset)
+}
+
+// scaleOr1 reads a part's scale, treating the zero value as the identity.
+func (p *PartState) scaleOr1() float64 {
+	if p.Scale == 0 {
+		return 1
+	}
+	return p.Scale
+}
+
+func (p *PartState) key() string {
+	if p.Sub != "" {
+		return "sub:" + p.Sub
+	}
+	return fmt.Sprintf("anon:%p", p)
 }
 
 type Entity struct {
@@ -466,7 +500,29 @@ type boundMethod struct {
 	name string
 }
 
-type partsRef struct{ E *Entity }
+func (e *Entity) partBySub(sub string) *PartState {
+	for _, p := range e.Parts {
+		if p.Sub == sub {
+			return p
+		}
+	}
+	return nil
+}
+
+// subPart returns the emphasis handle for a substring of the entity's text,
+// creating it on first use. Identity is the substring itself, so repeated
+// `text.sub("...")` calls share one tweenable PartState.
+func subPart(e *Entity, sub string) *PartState {
+	for _, p := range e.Parts {
+		if p.Sub == sub {
+			return p
+		}
+	}
+	p := &PartState{Sub: sub, E: e, Opacity: 1}
+	e.Parts = append(e.Parts, p)
+	e.layoutKey = "" // invalidate cache so the new span is segmented out
+	return p
+}
 
 func (s *Scope) lookup(name string) (Value, error) {
 	if s.binds != nil {
@@ -478,14 +534,14 @@ func (s *Scope) lookup(name string) (Value, error) {
 			if it.Cols != nil {
 				if c, ok := it.Cols[name]; ok {
 					if local, ok := c.(FamilyLocalBinding); ok {
-						if v, ok := s.rt.cachedLocalBind(it.Cols, name); ok {
+						if v, ok := s.rt.cachedLocalBind(it.LocalID, name); ok {
 							return v, nil
 						}
 						val, err := s.evalFamilyLocal(local)
 						if err != nil {
 							return nil, err
 						}
-						s.rt.cacheLocalBind(it.Cols, name, val)
+						s.rt.cacheLocalBind(it.LocalID, name, val)
 						return val, nil
 					}
 					return c, nil
@@ -711,11 +767,6 @@ func indexValue(x Value, i int) (Value, error) {
 			return nil, fmt.Errorf("index %d out of range for record %s (len %d)", i, v.Name, len(v.Items))
 		}
 		return v.Items[i], nil
-	case partsRef:
-		if i < 0 || i >= len(v.E.Parts) {
-			return nil, fmt.Errorf("part index %d out of range for %s", i, v.E.Name)
-		}
-		return v.E.Parts[i], nil
 	case Vec:
 		if i < 0 || i > 2 {
 			return nil, fmt.Errorf("point index out of range")
@@ -926,8 +977,8 @@ func (s *Scope) attr(x Value, name string) (Value, error) {
 
 func (s *Scope) entityAttr(e *Entity, name string) (Value, error) {
 	switch name {
-	case "parts":
-		return partsRef{E: e}, nil
+	case "sub":
+		return boundMethod{recv: e, name: "sub"}, nil
 	case "point":
 		if e.Type == "axes" {
 			return boundMethod{recv: e, name: "point"}, nil
@@ -996,6 +1047,14 @@ func (s *Scope) partAttr(p *PartState, name string) (Value, error) {
 		return entityColor(p.E), nil
 	case "opacity":
 		return p.Opacity, nil
+	case "strike":
+		return p.Strike, nil
+	case "underline":
+		return p.Underline, nil
+	case "wiggle":
+		return p.Wiggle, nil
+	case "scale":
+		return p.scaleOr1(), nil
 	}
 	// geometric attrs come from the text layout
 	at, w, h := partBox(p)
@@ -1015,7 +1074,7 @@ func (s *Scope) partAttr(p *PartState, name string) (Value, error) {
 	case "h":
 		return h, nil
 	}
-	return nil, fmt.Errorf("part %s has no attribute %q", p.Name, name)
+	return nil, fmt.Errorf("part %s has no attribute %q", p.key(), name)
 }
 
 func (s *Scope) evalCall(v CallE) (Value, error) {
@@ -1056,6 +1115,18 @@ func (s *Scope) evalCall(v CallE) (Value, error) {
 
 func callMethod(bm boundMethod, args []Value) (Value, error) {
 	switch bm.name {
+	case "sub": // text.sub("phrase") -> emphasis handle for that substring
+		if len(args) != 1 {
+			return nil, fmt.Errorf(`sub("phrase") needs one string arg`)
+		}
+		s, ok := args[0].(string)
+		if !ok {
+			return nil, fmt.Errorf("sub: arg must be a string, got %T", args[0])
+		}
+		if s == "" {
+			return nil, fmt.Errorf("sub: arg must not be empty")
+		}
+		return subPart(bm.recv, s), nil
 	case "point": // axes data coords -> world point
 		if len(args) < 2 {
 			return nil, fmt.Errorf("point(x, y) needs two args")
