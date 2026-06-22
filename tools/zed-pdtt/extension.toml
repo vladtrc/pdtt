@@ -13,8 +13,9 @@ capabilities = []
 [lib]
 
 [grammars.pdtt]
-repository = "file:///home/u/p/pdtt/tools/zed-pdtt/grammars/pdtt"
-rev = "main"
+repository = "https://github.com/vladtrc/pdtt"
+rev = "7d97c4f89ab1ef0b4eb09ceaf090e7e5787824d0"
+path = "tools/zed-pdtt/grammars/pdtt"
 
 [language_servers]
 
