@@ -14,7 +14,7 @@ capabilities = []
 
 [grammars.pdtt]
 repository = "https://github.com/vladtrc/pdtt"
-rev = "7d97c4f89ab1ef0b4eb09ceaf090e7e5787824d0"
+rev = "ea6d0071e353a15a5a3bf11435533e3e8ee39b2a"
 path = "tools/zed-pdtt/tree-sitter-pdtt"
 
 [language_servers]
