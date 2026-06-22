@@ -13,6 +13,8 @@ scene name
 extern fn name(arg: type, …) -> type      # pure host function, eval-time only
 
 name = expr                               # capture: evaluate once here, freeze the result
+scene name:                               # reusable scene block
+run name                                  # splice that scene block here
 
 type name:                                # record (singular)
   field: expr                             #   value field — re-evaluates every frame
@@ -21,11 +23,35 @@ type name:                                # record (singular)
 ```
 
 Same `type name:` declared twice merges into one record (fields in declaration order, first wins).
+When compiling a file path, sibling `.pdtt` files in the same directory are visible too; the input
+file is parsed first.
+
+## Scene blocks
+
+`scene name` names the output scene. `scene name:` defines a reusable block of state/time forms.
+`run name` compiles that block at the current point in the timeline, sharing the same records and
+globals as the caller:
+
+```
+scene tour
+
+text narrator:
+  text: "..."
+
+run graph
+
+scene graph:
+plot p:
+  fn: sin(x)
+
+| 1s | in:draw | p
+```
 
 ## Time: the `|` line
 
-Every `|` line is a list of `|`-separated **cells**. The last cell may be an **edit**
-(`path -> expr` or `obj{...} -> obj`); every cell before it is a **modifier** shaping that edit:
+Every `|` line is a list of `|`-separated **cells**. The last cell is either an **edit**
+(`path -> expr`) or the **subject** of a verb modifier (`in:`/`ou:`/`highlight:`); every cell
+before it is a **modifier** shaping that edit:
 
 ```
 | <mod> | <mod> | path -> expr
@@ -35,16 +61,16 @@ The first `|` line after a blank line opens a **block**. Its first cell is the *
 remaining modifier cells become **block defaults** applied to every row:
 
 ```
-| 4s | linear              # clock = 4s, default ease = linear
-| theta -> math.tau        # a row; eases linear unless it says otherwise
-| 0-.5 | x -> 1            # this row overrides the window; ease still linear
+| 4s | ease:linear  # clock = 4s, default ease = linear
+| theta -> math.tau  # a row; eases linear unless it says otherwise
+| 0-.5 | x -> 1  # this row overrides the window; ease still linear
 ```
 
 Rules:
 - A clock is `4s` (seconds), `0.3` / `30%` (fraction of parent), or `each record [as name] dur`.
 - A per-row modifier overrides a block default of the same kind.
 - The opening line may carry the block's first edit inline as its last cell:
-  `| 4s | linear | theta -> math.tau` ≡ the two-line form above.
+  `| 4s | ease:linear | theta -> math.tau` ≡ the two-line form above.
 - All rows in a block share the clock `u ∈ [0,1]` and run in parallel unless a window narrows them.
 
 ## Edit — the tween `->`
@@ -52,21 +78,31 @@ Rules:
 `path -> expr`: during the window, interpolate `path` toward `expr`; after, `path` **is** `expr`
 (dynamic targets keep tracking). See `tween.md`.
 
-## Edit — self-entry tween
+## Entrance / exit — `in:` and `ou:`
 
 Records are declared inactive: they can be referenced by expressions, but they are not rendered
-until an entry or morph activates them.
+until an entrance (or a morph) activates them.
 
-`obj{field: start, ...} -> obj` is a same-object transition. The left side is a phantom copy of
-`obj` with the listed field overrides; the right side is the declared object. Over the window,
-each overridden field tweens from the phantom value back to the declared value:
+`in:PRESET | subject` brings a subject on screen: it snaps the preset's hidden fields, then tweens
+them back to the declared values over the window. `ou:PRESET | subject` is the reverse — it tweens
+declared → hidden, then leaves the subject inactive. Subjects may be comma-separated. Presets:
+
+| Preset | Hidden fields |
+|---|---|
+| `draw` | `draw: 0` (stroke wipes on) |
+| `fade` | `opacity: 0` |
+| `pop` | `opacity: 0`, `scale: 0.2` |
+| `draw_fade` | `draw: 0`, `opacity: 0` |
 
 ```
-| 1s | s{draw: 0} -> s
-| 1s | label{opacity: 0} -> label
+| 1s | in:draw | s
+| 1s | in:fade | label
+| 1s | in:fade | title, capL, capR
+| 1s | ou:fade | label   # dismiss it again
 ```
 
-Because both sides are the same object, this is the special case that needs no `morph` modifier.
+The subject is the last cell and may broadcast (`in:pop | ring[* as i].p`). It is a per-field
+self-transition, never a morph.
 
 ## Modifiers
 
@@ -76,8 +112,10 @@ Order within a line is free.
 | Cell | Effect |
 |---|---|
 | `a-b` | window `(from, to)`; either side optional: `-.5` = `0-.5`, `.5-` = `.5-1`. Bare `-` is an error. |
-| `linear` `smooth` `ease_in` `ease_out` `ease_out_cubic` `ease_in_out` | easing |
-| `morph` `fade_in` `draw` `write` | transition strategy |
+| `ease:NAME` | easing — `linear` `smooth` `in` `out` `out_cubic` `in_out` |
+| `transition:NAME` | transition strategy for a `->` edit — `morph` `fade_in` `draw` `write` |
+| `in:PRESET` / `ou:PRESET` | entrance / exit of the subject cell — `draw` `fade` `pop` `draw_fade` |
+| `highlight:CHANNEL` | transient emphasis of the subject span — `flash` `strike` `underline` `enlarge` `wiggle` |
 | `after r` `lag d` `stagger d` | window offsets (`stagger` is per-element) |
 | `by name` `by pos` | pairing for structural transitions |
 
@@ -90,7 +128,7 @@ with `.i` (index) and `.n` (count). Multiple `[*]` bind `it.0`, `it.1`, … left
 their indices also read as `i j k l`. Both sides of `->` may broadcast.
 
 ```
-| stagger .1s | morph | dots[*] -> targets[i]
+| stagger .1s | transition:morph | dots[*] -> targets[i]
 | grid[*][*].color -> (i+j) % 2 == 0 ? color.red : color.white
 ```
 

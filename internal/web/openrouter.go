@@ -21,41 +21,6 @@ const (
 	maxOpenRouterAttempts = 2
 	maxRepairAttempts     = maxOpenRouterAttempts - 1
 	defaultMaxTokens      = 6000
-	pdttWebHarnessDoc     = `## Web Playground Harness
-
-The web playground renders square 640x640 MP4 videos. The default camera frame is about 14.2 x 8.0 world units, centered at [0, 0]. Keep important content inside roughly x = -6.7..6.7 and y = -3.6..3.6 unless you animate the built-in frame record.
-
-plane/axes have a physical size of about 10 x 6 world units; x_range/y_range change data coordinates, not screen size. The video stays square; use the built-in frame record when a graph-heavy scene needs a tighter camera:
-
-frame frame:
-  at: [0, -0.25]
-  w: 11.2
-
-This makes a 10 x 6 graph use about 85-90% of the frame width. Put the graph around [0, -0.35] when also showing a title and a formula.
-
-axes are physically 10 x 6, so equal data units need y_span about 0.6 * x_span. Example: x_range [-3, 3, 1] pairs with y_range [-1.8, 1.8, 0.6]. A much larger y_range compresses the curve vertically.`
-
-	pdttWebStyleGuideDoc = `## Web Playground Style Guide
-
-Use the square frame deliberately. For one main graph or diagram, do not leave a small object floating in the middle when there are no other large objects.
-
-Layout suggestions:
-- Titles: y = 2.8..3.1
-- Main graph with title/formula: at = [0, -0.35]
-- Bottom formulas/captions: y = -3.0..-2.6
-
-Convenient scale ranges:
-- Title/narration text: 0.48..0.70
-- Formulas: 0.65..0.95
-- Labels near points: 0.28..0.42
-- Small tick/axis labels: 0.24..0.34
-
-Timing rules for readable generated scenes:
-- Show one explanatory text card at a time.
-- After showing prose text, hold 1.2s..2.8s depending on length.
-- Fade old text out before showing the next text card.
-- Parallelize related geometry animation, but keep text beats sequential.
-- End with a 1.0s..1.8s hold or a gentle fade-out.`
 )
 
 type generateReporter func(stage, detail string)
@@ -105,7 +70,7 @@ func newOpenRouterGenerator(cfg config.OpenRouter) sceneGenerator {
 func loadPDTTLLMDocs(cfg config.OpenRouter) string {
 	base := strings.TrimSpace(pdttmd.Full)
 	if base == "" {
-		base = "Write valid PDTT source only. No Markdown fences or explanations."
+		base = "Write valid PDTT source only, wrapped in a single ```pdtt code fence and nothing else."
 	}
 	if path := strings.TrimSpace(cfg.RulesPath); path != "" {
 		if data, err := os.ReadFile(path); err == nil && len(bytes.TrimSpace(data)) > 0 {
@@ -116,7 +81,7 @@ func loadPDTTLLMDocs(cfg config.OpenRouter) string {
 			log.Printf("openrouter rules: %s is empty, using embedded pdtt/md/full.md", path)
 		}
 	}
-	return strings.TrimRight(base, "\n") + "\n\n" + pdttWebHarnessDoc + "\n\n" + pdttWebStyleGuideDoc
+	return strings.TrimRight(base, "\n") + "\n\n" + strings.TrimSpace(pdttmd.WebHarness)
 }
 
 func (g *openRouterGenerator) Generate(ctx context.Context, prompt string, report generateReporter) (string, error) {
@@ -160,7 +125,7 @@ func (g *openRouterGenerator) Generate(ctx context.Context, prompt string, repor
 		messages = append(messages,
 			openRouterMessage{Role: "assistant", Content: lastScene},
 			openRouterMessage{Role: "user", Content: fmt.Sprintf(
-				"The PDTT scene failed validation without rendering:\n%s\n\nReturn a corrected full PDTT scene only. Keep the user's original intent. No Markdown fences. Never use braces, JSON-like blocks, camera fields, tuple coordinates, or \"time ... ->\" rows; use indented PDTT records and pipe animation rows.",
+				"The PDTT scene failed validation without rendering:\n%s\n\nReturn a corrected full PDTT scene, wrapped in a single ```pdtt code fence and nothing else. Keep the user's original intent. Never use braces, JSON-like blocks, camera fields, tuple coordinates, or \"time ... ->\" rows; use indented PDTT records and pipe animation rows.",
 				lastErr.Error(),
 			)},
 		)
@@ -208,7 +173,7 @@ func modelLabel(model string) string {
 func (g *openRouterGenerator) systemPrompt() string {
 	return "You generate concise, readable PDTT animation scenes.\n\n" +
 		g.rules +
-		"\n\nOutput contract: return one complete PDTT scene only. No Markdown, no code fences, no comments outside the code."
+		"\n\nOutput contract: return exactly one complete PDTT scene, wrapped in a single ```pdtt code fence and nothing else. The fence is required: PDTT is whitespace-sensitive (indented records, leading spaces in pipe rows) and the fence preserves indentation and spaces that would otherwise be lost. Put no prose, no extra fences, and no comments outside the code."
 }
 
 func (g *openRouterGenerator) chat(ctx context.Context, messages []openRouterMessage) (string, error) {

@@ -96,7 +96,7 @@ text m:
   text: "hi there"
   color: color.white
 
-| 1s | linear | strike | m.sub("hi")
+| 1s | ease:linear | highlight:strike | m.sub("hi")
 `)
 	m := oneEntity(t, rt, "m")
 	if err := rt.Step(0.5); err != nil {
@@ -126,7 +126,7 @@ text m:
   text: "hi there"
   color: color.white
 
-| 1s | linear | flash | m.sub("hi")
+| 1s | ease:linear | highlight:flash | m.sub("hi")
 `)
 	m := oneEntity(t, rt, "m")
 	if err := rt.Step(0.5); err != nil {
@@ -160,7 +160,7 @@ text m:
 
 | 1s | m.sub("hi").color -> color.red
 
-| 1s | linear | flash | m.sub("hi")
+| 1s | ease:linear | highlight:flash | m.sub("hi")
 `)
 	m := oneEntity(t, rt, "m")
 	if err := rt.Step(1.5); err != nil {
@@ -197,7 +197,7 @@ text m:
 
 | 1s | m.sub("hi").wiggle -> 1
 
-| 1s | linear | wiggle | m.sub("hi")
+| 1s | ease:linear | highlight:wiggle | m.sub("hi")
 `)
 	m := oneEntity(t, rt, "m")
 	if err := rt.Step(2.0); err != nil {
@@ -262,7 +262,7 @@ text labels:
   for: range(2)
   text: "hi"
 
-| 1s | linear | flash | labels[*].sub("hi")
+| 1s | ease:linear | highlight:flash | labels[*].sub("hi")
 `)
 	if err := rt.Step(0.5); err != nil {
 		t.Fatalf("Step: %v", err)
@@ -368,7 +368,7 @@ func TestTextDrawReveal(t *testing.T) {
 text m:
   text: "hello"
 
-| 1s | m{draw: 0} -> m
+| 1s | in:draw | m
 `)
 	m := oneEntity(t, rt, "m")
 	if err := rt.Step(0.0); err != nil {

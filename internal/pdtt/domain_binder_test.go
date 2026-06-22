@@ -71,7 +71,7 @@ roots[val.indices as i]:
     points: [[val[i], -1], mark.at]
     stroke.end: arrow
 
-| 1s | linear
+| 1s | ease:linear
 | val[* as i] -> [2, 3][i]
 `)
 
@@ -138,7 +138,7 @@ roots[0..2 as i]:
     points: [[0, 0], [x, 0]]
     stroke.end: arrow
 
-| 1s | linear
+| 1s | ease:linear
 | scale -> 3
 `)
 
@@ -179,7 +179,7 @@ ring[0..n as i]:
     points: [ring[prev_i].p.at, p.at]
     stroke.end: arrow
 
-| 1s | linear
+| 1s | ease:linear
 | phase -> math.tau
 `)
 
@@ -204,7 +204,7 @@ func TestSnapshotColonBindingFreezesRecord(t *testing.T) {
 
 home: snapshot frame
 
-| 1s | linear
+| 1s | ease:linear
 | frame.w -> 7.1
 `)
 
@@ -272,7 +272,7 @@ func TestAnonymousRHSBroadcastCanExpandWhenTargetsStayDistinct(t *testing.T) {
 val: [0, 1]
 other: [2]
 
-| 1s | linear
+| 1s | ease:linear
 | val[*] -> other[*]
 `)
 
@@ -300,7 +300,7 @@ func TestPlainBroadcastBindsCanonicalIndexName(t *testing.T) {
 a: [0, 1]
 b: [2, 3]
 
-| 1s | linear
+| 1s | ease:linear
 | a[*] -> b[i]
 `)
 
@@ -324,7 +324,7 @@ func TestPlainBroadcastBindsCanonicalItValue(t *testing.T) {
 
 a: [1, 2]
 
-| 1s | linear
+| 1s | ease:linear
 | a[*] -> it + 10
 `)
 
@@ -365,28 +365,6 @@ func TestNumericItAttributeParsesAndEvaluates(t *testing.T) {
 	}
 	if f != 5 {
 		t.Fatalf("result = %v, want 5", f)
-	}
-}
-
-func TestBroadcastEnterRequiresSameExpandedObject(t *testing.T) {
-	stmts, err := ParseFile(`scene mismatched_enter
-
-roots[0..2 as i]:
-  dot mark:
-    at: [i, 0]
-
-other[0..2 as i]:
-  dot mark:
-    at: [i, 1]
-
-| 1s
-| roots[* as i].mark{opacity: 0} -> other[i].mark
-`)
-	if err != nil {
-		t.Fatalf("ParseFile: %v", err)
-	}
-	if _, err := Compile(stmts); err == nil {
-		t.Fatal("Compile succeeded, want mismatched self-entry error")
 	}
 }
 

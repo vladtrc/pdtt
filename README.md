@@ -70,9 +70,9 @@ Flags:
 - Arrowheads are path styling: `stroke.end: arrow`.
 - Tween (`->`) keeps tracking dynamic RHS expressions after the tween window ends.
 - `examples/20-dynamic-point-tween` demonstrates a tween between two moving points.
-- Records start inactive. Use `obj{field: start} -> obj` for same-object entry and `morph` to activate a target.
+- Records start inactive. Use `in:PRESET | subject` for entrance (`in:draw`, `in:fade`, `in:pop`, …) or `transition:morph | a -> b` to morph between shapes.
 - Text rendering uses `typst` (`typst compile -f svg - -`) for native glyph outlines; if `typst` is absent on `PATH`, pdtt falls back to legacy freetype text rendering.
 - Text records use `text name:` with a `text:` field; math/Typst records use `typst name:` the same way. Plain text is set in "New Computer Modern", matching the math letterforms.
-- Text strings take `\n` for line breaks; the `draw` field reveals text left to right (`t{draw: 0} -> t`), the text analogue of drawing a path on.
+- Text strings take `\n` for line breaks; `in:draw | t` reveals text left to right (glyph by glyph), the text analogue of drawing a path on.
 - Any substring is independently tweenable via `t.sub("phrase").{color,opacity,strike,underline,scale,wiggle}`; a plain `->` arrow sets-and-holds the effect.
-- For a one-shot highlight that lights up then settles back to rest, use a transient modifier cell instead — a bare channel keyword and a target span, no arrow: `| 1s | smooth | flash | t.sub("phrase")` (also `strike`, `underline`, `enlarge`, `wiggle`). See `examples/text-features`.
+- For a one-shot highlight that lights up then settles back to rest, use a transient modifier cell: `| 1s | ease:smooth | highlight:flash | t.sub("phrase")` (also `strike`, `underline`, `enlarge`, `wiggle`). See `examples/text-features`.

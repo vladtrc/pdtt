@@ -71,24 +71,21 @@ typst expo_lab:
   color: color.pink
 
 # --- act 0: graph appears, polynomial already ahead, exponential flat ---
-| 0.7s | smooth
-| grid{draw: 0} -> grid
-| ax{opacity: 0} -> ax
-| quad_lab{opacity: 0} -> quad_lab
-| expo_lab{opacity: 0} -> expo_lab
-| cross{opacity: 0, scale: 0.2} -> cross
+| 0.7s | ease:smooth
+| in:draw | grid
+| in:fade | ax, quad_lab, expo_lab
+| in:pop | cross
 
-| 0.8s | smooth
-| quad{draw: 0} -> quad
-| expo{draw: 0} -> expo
+| 0.8s | ease:smooth
+| in:draw | quad, expo
 
 # marker has done its job at the first crossing — retire it before the zoom so
 # it never floats off-curve mid-transit
-| 0.3s | smooth
+| 0.3s | ease:smooth
 | cross.opacity -> 0
 
 # --- act 1: zoom out two orders of magnitude; 1.1^x overtakes and escapes ---
-| 4.5s | smooth
+| 4.5s | ease:smooth
 | xhi -> 120
 | xstep -> 20
 | kfac -> 1.04
@@ -96,12 +93,12 @@ typst expo_lab:
 | iy -> cy
 
 # mark the second crossing once the curves have settled there
-| 0.5s | smooth
+| 0.5s | ease:smooth
 | cross.opacity -> 1
 
 # --- act 2: hand framing over to the exponential (efac -> 1) so 1.1^x settles
 # in as the curve that fills the frame ---
-| 0.9s | smooth
+| 0.9s | ease:smooth
 | efac -> 1
 | xhi -> 135
 | xstep -> 30
@@ -109,12 +106,12 @@ typst expo_lab:
 
 # keep pulling back: 1.1^x stays framed while x^2 collapses to a flat line on
 # the axis — the exact mirror of the opening
-| 2.4s | smooth
+| 2.4s | ease:smooth
 | xhi -> 200
 | xstep -> 50
 
 # --- outro ---
-| 0.7s | smooth
+| 0.7s | ease:smooth
 | grid.draw -> 0
 | ax.opacity -> 0
 | quad.opacity -> 0

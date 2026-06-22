@@ -23,7 +23,7 @@ func blockOf(t *testing.T, src string) *BlockStmt {
 }
 
 func TestInlineHeaderRow(t *testing.T) {
-	b := blockOf(t, "| 10s | linear | theta -> math.tau\n")
+	b := blockOf(t, "| 10s | ease:linear | theta -> math.tau\n")
 	if b.DurS != 10 {
 		t.Errorf("DurS = %v, want 10", b.DurS)
 	}
@@ -42,8 +42,8 @@ func TestInlineHeaderRow(t *testing.T) {
 }
 
 func TestInlineHeaderEquivalentToTwoLines(t *testing.T) {
-	inline := blockOf(t, "| 10s | linear | theta -> math.tau\n")
-	split := blockOf(t, "| 10s | linear\n| theta -> math.tau\n")
+	inline := blockOf(t, "| 10s | ease:linear | theta -> math.tau\n")
+	split := blockOf(t, "| 10s | ease:linear\n| theta -> math.tau\n")
 	if inline.DurS != split.DurS {
 		t.Errorf("DurS differs: %v vs %v", inline.DurS, split.DurS)
 	}
@@ -56,14 +56,14 @@ func TestInlineHeaderEquivalentToTwoLines(t *testing.T) {
 }
 
 func TestInlineHeaderRowThenMoreRows(t *testing.T) {
-	b := blockOf(t, "| 10s | linear | theta -> math.tau\n| p.opacity -> 1\n")
+	b := blockOf(t, "| 10s | ease:linear | theta -> math.tau\n| p.opacity -> 1\n")
 	if len(b.Rows) != 2 {
 		t.Fatalf("Rows = %d, want 2", len(b.Rows))
 	}
 }
 
 func TestConsecutiveInlineHeadersBecomeSequentialBlocks(t *testing.T) {
-	stmts, err := ParseFile("| 1s | s{draw: 0} -> s\n| 1s | morph | s -> d\n")
+	stmts, err := ParseFile("| 1s | in:draw | s\n| 1s | transition:morph | s -> d\n")
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
@@ -81,8 +81,48 @@ func TestConsecutiveInlineHeadersBecomeSequentialBlocks(t *testing.T) {
 	}
 }
 
+func TestConsecutiveSameDurationInlineHeadersBecomeSequentialBlocks(t *testing.T) {
+	src := "| 1s | in:draw | s\n| 1s | in:draw | s\n| 1s | in:draw | s\n| 1s | in:draw | s\n"
+	stmts, err := ParseFile(src)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	if len(stmts) != 4 {
+		t.Fatalf("stmts = %d, want 4 sequential blocks", len(stmts))
+	}
+	for i, st := range stmts {
+		b, ok := st.(BlockStmt)
+		if !ok {
+			t.Fatalf("stmt %d = %T, want BlockStmt", i, st)
+		}
+		if b.DurS != 1 || len(b.Rows) != 1 {
+			t.Fatalf("block %d = dur %v rows %d, want dur 1 rows 1", i, b.DurS, len(b.Rows))
+		}
+	}
+}
+
+func TestCommaSeparatedVerbSubjects(t *testing.T) {
+	rt := compileScene(t, `scene comma_subjects
+
+text title:
+  text: "Title"
+
+text capL:
+  text: "Left"
+
+text capR:
+  text: "Right"
+
+| 1s | ease:linear
+| in:fade | title, capL, capR
+`)
+	if len(rt.Anims) != 3 {
+		t.Fatalf("anims = %d, want 3 fade entrances", len(rt.Anims))
+	}
+}
+
 func TestDurationPrefixedRowStaysInSplitBlock(t *testing.T) {
-	stmts, err := ParseFile("| 4s | linear\n| x -> 1\n| 1s | y -> 1\n")
+	stmts, err := ParseFile("| 4s | ease:linear\n| x -> 1\n| 1s | y -> 1\n")
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
@@ -102,7 +142,7 @@ func TestDurationPrefixedRowStaysInSplitBlock(t *testing.T) {
 }
 
 func TestDurationPrefixedRowStaysAfterInlineHeader(t *testing.T) {
-	stmts, err := ParseFile("| 10s | linear | theta -> math.tau\n| 1s | x -> 1\n")
+	stmts, err := ParseFile("| 10s | ease:linear | theta -> math.tau\n| 1s | x -> 1\n")
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
@@ -125,6 +165,34 @@ func TestInlineEditMustBeLastCell(t *testing.T) {
 	_, err := ParseFile("| 10s | theta -> math.tau | linear\n")
 	if err == nil {
 		t.Fatal("expected error: inline edit not last cell")
+	}
+}
+
+func TestParsePathRunsSiblingScene(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := filepath.Join(dir, "run.pdtt")
+	if err := os.WriteFile(mainPath, []byte(`scene main
+run part
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "part.pdtt"), []byte(`scene part:
+dot d:
+  at: [0, 0]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stmts, err := NewSceneParser().ParsePath(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := Compile(stmts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rt.Groups["d"] == nil {
+		t.Fatal("run part did not compile sibling scene record")
 	}
 }
 
@@ -242,7 +310,7 @@ text label:
   scale: 1.2
   color: color.white
 
-| 1s | smooth
+| 1s | ease:smooth
 | label.text -> "ellipse{rx: 1, ry: 0.5}"
 `)
 	if err := rt.Step(0.5); err != nil {
@@ -276,11 +344,11 @@ text label:
   scale: 1.2
   color: color.white
 
-| 1s | smooth
-| ease_out | label.text -> "` + dest + `"
+| 1s | ease:smooth
+| ease:out | label.text -> "` + dest + `"
 `
 	rtOut := compileScene(t, src)
-	rtSmooth := compileScene(t, strings.Replace(src, "ease_out", "smooth", 1))
+	rtSmooth := compileScene(t, strings.Replace(src, "ease:out", "ease:smooth", 1))
 
 	readable := func(rt *Runtime) bool {
 		label := oneEntity(t, rt, "label")
@@ -311,8 +379,8 @@ text label:
   scale: 1.2
   color: color.white
 
-| 1s | smooth
-| ease_out | label.text -> "`+dest+`"
+| 1s | ease:smooth
+| ease:out | label.text -> "`+dest+`"
 `)
 	// ease_out(0.7) ≈ 0.91 ≥ textMorphReadU — crisp destination text before window ends.
 	if err := rt.Step(0.7); err != nil {
@@ -392,9 +460,9 @@ path edge:
   stroke.end: arrow
   draw: 1
 
-| 1s | linear | edge{draw: 0} -> edge
+| 1s | ease:linear | in:draw | edge
 
-| 1s | linear
+| 1s | ease:linear
 | edge.stroke.color -> color.red
 `)
 	edge := oneEntity(t, rt, "edge")
@@ -439,7 +507,7 @@ path s:
   closed: 1
   stroke.color: color.white
 
-| 1s | s{draw: 0} -> s
+| 1s | in:draw | s
 `)
 	s := oneEntity(t, rt, "s")
 	if s.Active {
@@ -467,9 +535,9 @@ path s:
 dot d:
   radius: 1
 
-| 1s | s{draw: 0} -> s
+| 1s | in:draw | s
 
-| 1s | morph | s -> d
+| 1s | transition:morph | s -> d
 `)
 	s := oneEntity(t, rt, "s")
 	d := oneEntity(t, rt, "d")

@@ -23,7 +23,7 @@ plane dst:
   y_range: [-1, 1, 1]
 
 | 1s
-| morph | src -> dst
+| transition:morph | src -> dst
 `)
 
 	src := oneEntity(t, rt, "src")
@@ -89,7 +89,7 @@ path b:
   stroke.color: color.gold
 
 | 1s
-| morph | a -> b
+| transition:morph | a -> b
 `)
 	a := oneEntity(t, rt, "a")
 	b := oneEntity(t, rt, "b")

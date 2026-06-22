@@ -149,28 +149,22 @@ halo[0..18 as i]:
     color: color.blue
     opacity: 0.05 + 0.15 * pulse
 
-| 0.75s | smooth | stagger 0.012s
-| ribbon[* as i].core{opacity: 0, scale: 0.2} -> ribbon[i].core
-| halo[* as i].p{opacity: 0, scale: 0.2} -> halo[i].p
+| 0.75s | ease:smooth | stagger 0.012s
+| in:pop | ribbon[* as i].core, halo[* as i].p
 
-| 0.95s | smooth
+| 0.95s | ease:smooth
 | spread -> 1
 | beat -> 1
 | zoom -> 6.6
 
-| 0.95s | smooth | stagger 0.010s
-| ribbon[* as i].a{opacity: 0, scale: 0.2} -> ribbon[i].a
-| ribbon[* as i].b{opacity: 0, scale: 0.2} -> ribbon[i].b
+| 0.95s | ease:smooth | stagger 0.010s
+| in:pop | ribbon[* as i].a, ribbon[* as i].b
 
-| 1.0s | smooth | stagger 0.010s
-| ribbon[* as i].edge_a{draw: 0, opacity: 0} -> ribbon[i].edge_a
-| ribbon[* as i].edge_b{draw: 0, opacity: 0} -> ribbon[i].edge_b
-| ribbon[* as i].rung{draw: 0, opacity: 0} -> ribbon[i].rung
-| trail[* as i].p{opacity: 0, scale: 0.2} -> trail[i].p
-| bead{opacity: 0, scale: 0.2} -> bead
-| bead_glow{opacity: 0, scale: 0.2} -> bead_glow
+| 1.0s | ease:smooth | stagger 0.010s
+| in:draw_fade | ribbon[* as i].edge_a, ribbon[* as i].edge_b, ribbon[* as i].rung
+| in:pop | trail[* as i].p, bead, bead_glow
 
-| 2.4s | smooth
+| 2.4s | ease:smooth
 | zoom -> 5.8
 | yaw -> 0.35
 | pitch -> 0.88
@@ -182,14 +176,14 @@ halo[0..18 as i]:
 | phase -> 2.95 * math.pi
 | travel -> 2.65 * math.pi
 
-| 2.5s | smooth
+| 2.5s | ease:smooth
 | zoom -> 4.8
 | yaw -> 2.82
 | pitch -> -0.14
 | phase -> 4.35 * math.pi
 | travel -> 3.95 * math.pi
 
-| 2.6s | smooth
+| 2.6s | ease:smooth
 | zoom -> 5.9
 | yaw -> 4.08
 | pitch -> 0.74

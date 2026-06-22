@@ -15,7 +15,12 @@ EXAMPLES := $(notdir $(wildcard examples/*))
 
 # NB: render-%/ref-% are intentionally NOT .PHONY — GNU Make skips pattern-rule
 # search for phony targets, and there is no file by those names anyway.
-.PHONY: all build web-build web-generate web-run tools format lint fmt render-all _render-all ref render example clean
+.PHONY: all build web-build web-generate web-run web-release deploy deploy-unit deploy-init-config tools format lint fmt render-all _render-all ref render example clean
+
+# --- web deploy (atomic stop/swap/start; never touches config or .secret) ---
+DEPLOY_HOST := root@109.69.57.65
+DEPLOY_DIR  := /opt/pdtt
+WEB_RELEASE := ./bin/pdttweb-release
 
 # default: build once, then render every example's res/ in PARALLEL.
 all:
@@ -46,6 +51,31 @@ web-build:
 web-run: web-build
 	@mkdir -p data/videos data/work
 	$(WEB_BIN) -config config.yaml -secret utils/secret/.secret
+
+# release build of the web server: static linux/amd64 binary, stripped.
+web-release: web-generate
+	mkdir -p ./bin
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=v3 \
+		go build -trimpath -buildvcs=false -ldflags '-s -w' -o $(WEB_RELEASE) ./cmd/pdttweb
+
+# deploy: build release binary, ship it, atomic stop/swap/start.
+# Never copies config.yaml or .secret — production secrets stay intact.
+deploy: web-release
+	ssh $(DEPLOY_HOST) "mkdir -p $(DEPLOY_DIR)/data/videos $(DEPLOY_DIR)/data/work && chown -R www-data:www-data $(DEPLOY_DIR)/data"
+	scp $(WEB_RELEASE) $(DEPLOY_HOST):/tmp/pdttweb.new
+	ssh $(DEPLOY_HOST) "systemctl stop pdttweb && mv /tmp/pdttweb.new $(DEPLOY_DIR)/app && chmod +x $(DEPLOY_DIR)/app && chown www-data:www-data $(DEPLOY_DIR)/app && systemctl start pdttweb"
+
+# install/update the systemd unit only (run when pdttweb.service changes).
+deploy-unit:
+	scp pdttweb.service $(DEPLOY_HOST):/etc/systemd/system/pdttweb.service
+	ssh $(DEPLOY_HOST) "systemctl daemon-reload && systemctl enable pdttweb && systemctl restart pdttweb"
+
+# DANGER: overwrites production config.yaml and .secret. First-time setup only.
+deploy-init-config:
+	@echo "WARNING: overwrites $(DEPLOY_DIR)/config.yaml and $(DEPLOY_DIR)/.secret on $(DEPLOY_HOST)"
+	scp config.yaml $(DEPLOY_HOST):$(DEPLOY_DIR)/config.yaml
+	scp utils/secret/.secret $(DEPLOY_HOST):$(DEPLOY_DIR)/.secret
+	ssh $(DEPLOY_HOST) "chown www-data:www-data $(DEPLOY_DIR)/config.yaml $(DEPLOY_DIR)/.secret && chmod 600 $(DEPLOY_DIR)/.secret"
 
 tools:
 	go install mvdan.cc/gofumpt@latest

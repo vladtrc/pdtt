@@ -500,6 +500,8 @@ type boundMethod struct {
 	name string
 }
 
+// partBySub returns the existing emphasis handle for a substring, or nil. Unlike
+// subPart it never creates one, so tests can assert a span was (not) materialized.
 func (e *Entity) partBySub(sub string) *PartState {
 	for _, p := range e.Parts {
 		if p.Sub == sub {

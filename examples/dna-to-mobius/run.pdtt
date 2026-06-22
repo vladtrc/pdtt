@@ -234,54 +234,46 @@ text mobius_title:
 
 # Activate the whole rig invisibly. The reveal field, not a stack of entry
 # tweens, now performs the visual construction.
-| 0.08s | linear
-| strand[* as i].edge_a{opacity: 0, draw: 0} -> strand[i].edge_a
-| strand[* as i].edge_b{opacity: 0, draw: 0} -> strand[i].edge_b
-| strand[* as i].rung{opacity: 0, draw: 0} -> strand[i].rung
-| strand[* as i].a{opacity: 0, scale: 0.2} -> strand[i].a
-| strand[* as i].b{opacity: 0, scale: 0.2} -> strand[i].b
-| strand[* as i].base{opacity: 0, scale: 0.2} -> strand[i].base
-| trail[* as i].p{opacity: 0} -> trail[i].p
-| bead{opacity: 0} -> bead
-| bead_glow{opacity: 0} -> bead_glow
-| dust[* as i].p{opacity: 0} -> dust[i].p
-| dna_title{opacity: 0} -> dna_title
+| 0.08s | ease:linear
+| in:draw_fade | strand[* as i].edge_a, strand[* as i].edge_b, strand[* as i].rung
+| in:pop | strand[* as i].a, strand[* as i].b, strand[* as i].base
+| in:fade | trail[* as i].p, bead, bead_glow, dust[* as i].p, dna_title
 
 # A single pulse writes the double helix into space.
-| 2.55s | ease_out_cubic
+| 2.55s | ease:out_cubic
 | width -> 1
 | reveal -> 1
 | .55- | energy -> 1
 | zoom -> 6.65
 
 # Let it rotate without stopping; only framing and emphasis breathe.
-| 2.15s | ease_in_out
+| 2.15s | ease:in_out
 | zoom -> 5.95
 | dna_title.scale -> 0.82
 | energy -> 0.82
 
 # The axis curls into a ring while the many DNA turns unwind into one half-turn.
 # Continuous rate fields carry rotation straight through both ends of this block.
-| 4.2s | ease_in_out
+| 4.2s | ease:in_out
 | form -> 1
 | zoom -> 8.20
 | focus -> [-0.25, -0.10]
 | energy -> 1
 | dna_title.opacity -> 0
-| .45- | mobius_title{opacity: 0, scale: 0.82} -> mobius_title
+| .45- | in:pop | mobius_title
 
 # The finished ribbon makes one Y-axis turn with a slower simultaneous Z roll.
 # Its single-color construction resolves quickly into a continuous two-color edge.
-| 6.4s | linear
+| 6.4s | ease:linear
 | turn -> 1
-| ease_out | 0s-1.15s | palette -> 1
+| ease:out | 0s-1.15s | palette -> 1
 | energy -> 0.45
 | mobius_title.scale -> 0.76
 | mobius_title.opacity -> 0.48
 
 # The ribbon unzips into its centerline under a traveling erase front. The
 # moving bead and its afterglow are the last elements left on screen.
-| 1.25s | ease_in_out
+| 1.25s | ease:in_out
 | outro -> 1
 | turn -> 1.14
 | energy -> 0

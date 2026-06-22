@@ -203,7 +203,7 @@ path arc_p:
   stroke.width: 0.04
   opacity: 0
 
-| 2.55s | smooth | morph | ell_f -> arc_p
+| 2.55s | ease:smooth | transition:morph | ell_f -> arc_p
 `)
 	ellF := oneEntity(t, rt, "ell_f")
 	arc := oneEntity(t, rt, "arc_p")
@@ -259,7 +259,7 @@ path circ:
   stroke.color: color.gold
   opacity: 0
 
-| 0.5s | morph | line -> circ
+| 0.5s | transition:morph | line -> circ
 `)
 	line := oneEntity(t, rt, "line")
 	circ := oneEntity(t, rt, "circ")

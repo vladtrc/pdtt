@@ -54,48 +54,45 @@ text right:
   color: color.white
 
 # 1. title and column captions fade in
-| 0.8s | smooth
-| title{opacity: 0} -> title
-| capL{opacity: 0} -> capL
-| capR{opacity: 0} -> capR
+| 0.8s | ease:smooth
+| in:fade | title, capL, capR
 
 # 2. write both columns at once, glyph by glyph
-| 1.4s | smooth
-| left{draw: 0} -> left
-| right{draw: 0} -> right
+| 1.4s | ease:smooth
+| in:draw | left, right
 
 # 2. colour — left flashes yellow and fades; right goes yellow and holds
-| 1.1s | smooth
-| flash | left.sub("colour")
+| 1.1s | ease:smooth
+| highlight:flash | left.sub("colour")
 | right.sub("colour").color -> color.yellow
 
 # 3. strike — left sweeps the rule in and back out; right leaves it struck
-| 1.1s | smooth
-| strike | left.sub("strike")
+| 1.1s | ease:smooth
+| highlight:strike | left.sub("strike")
 | right.sub("strike").strike -> 1
 
 # 4. underline — same contrast, one line down
-| 1.1s | smooth
-| underline | left.sub("underline")
+| 1.1s | ease:smooth
+| highlight:underline | left.sub("underline")
 | right.sub("underline").underline -> 1
 
 # 5. enlarge — left swells then settles; right stays big
-| 1.1s | smooth
-| enlarge | left.sub("enlarge")
+| 1.1s | ease:smooth
+| highlight:enlarge | left.sub("enlarge")
 | right.sub("enlarge").scale -> 1.6
 
 # 6. wiggle — modifier only: a self-contained shake with no "stays" counterpart
-| 1.1s | smooth | wiggle | left.sub("wiggle")
+| 1.1s | ease:smooth | highlight:wiggle | left.sub("wiggle")
 
 # 7. the `->` value is a live number — scrub the strike rule to .7, then .2,
 #    then back to full, to show it is a continuous edit, not an on/off flag
-| 0.5s | smooth | right.sub("strike").strike -> 0.7
+| 0.5s | ease:smooth | right.sub("strike").strike -> 0.7
 
-| 0.5s | smooth | right.sub("strike").strike -> 0.2
+| 0.5s | ease:smooth | right.sub("strike").strike -> 0.2
 
-| 0.6s | smooth | right.sub("strike").strike -> 1
+| 0.6s | ease:smooth | right.sub("strike").strike -> 1
 
 # 8. un-write everything in reverse
-| 1.6s | smooth
+| 1.6s | ease:smooth
 | left.draw -> 0
 | right.draw -> 0

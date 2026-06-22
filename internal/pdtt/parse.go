@@ -15,7 +15,16 @@ import (
 type Stmt interface{}
 
 type (
-	SceneStmt  struct{ Name string }
+	SceneStmt    struct{ Name string }
+	SceneDefStmt struct {
+		Name string
+		Body []Stmt
+		Line int
+	}
+	RunStmt struct {
+		Name string
+		Line int
+	}
 	ExternStmt struct{ Name string }
 )
 
@@ -75,26 +84,21 @@ type RowMod struct {
 }
 
 type RowOp struct {
-	Kind       string // "arrow" | "enter" | "highlight"
-	LHS        Expr
-	RHS        Expr
-	Transition string // optional transition prefix in op cell
+	Kind       string // "arrow" | "enter" | "exit" | "highlight"
+	LHS        Expr   // arrow left side, or the subject of a verb cell (enter/exit/highlight)
+	Subjects   []Expr // optional comma-separated verb subjects; defaults to LHS when empty
+	RHS        Expr   // arrow right side
+	Transition string // arrow transition (set by a `transition:NAME` modifier cell)
 
-	// highlight: a transient text modifier (`| wiggle | t.sub("x")`). The named
-	// channel is driven through a 0→peak→0 envelope over the window and left at
-	// rest — distinct from the persistent `->` form that sets-and-holds.
+	// highlight (`highlight:wiggle | t.sub("x")`): the transient channel keyword.
+	// It is driven through a 0→peak→0 envelope over the window and left at rest —
+	// distinct from the persistent `->` arrow that sets-and-holds.
 	Highlight string
 
-	// enter: `obj{field: expr, …} -> obj` — a self-transition. Snap the named
-	// object to a phantom copy with these fields overridden, then tween every
-	// overridden field back to the object's declared value over the window.
-	EnterName string
-	Overrides []EnterField
-}
-
-type EnterField struct {
-	Name string
-	Val  Expr
+	// enter/exit (`in:fade | title`, `ou:fade | title`): the named entrance/exit
+	// preset. enter snaps the subject to the preset's hidden field values then
+	// tweens back to the declared values; exit tweens declared→hidden and leaves.
+	Preset string
 }
 
 type Row struct {
@@ -123,9 +127,16 @@ var (
 	timeAmtRe   = regexp.MustCompile(`^(\d*\.?\d+)(s?)$`)
 )
 
-var easeNames = map[string]bool{
-	"linear": true, "smooth": true, "ease_in": true, "ease_out": true,
-	"ease_out_cubic": true, "ease_in_out": true,
+// easeAlias maps the `ease:NAME` value spelled on a timeline to the canonical
+// easing key in compile.go. The short spellings (`in`, `out`, …) are the surface
+// vocabulary; `linear`/`smooth` pass through unchanged.
+var easeAlias = map[string]string{
+	"linear":    "linear",
+	"smooth":    "smooth",
+	"in":        "ease_in",
+	"out":       "ease_out",
+	"in_out":    "ease_in_out",
+	"out_cubic": "ease_out_cubic",
 }
 
 var transitionNames = map[string]bool{
@@ -136,14 +147,30 @@ var transitionNames = map[string]bool{
 }
 
 // highlightChannel maps a transient text-modifier keyword to the part channel it
-// drives. A modifier cell (`| wiggle | t.sub("x")`) animates that channel through
-// a there-and-back envelope, unlike the persistent `->` arrow that sets-and-holds.
+// drives. `highlight:wiggle | t.sub("x")` animates that channel through a
+// there-and-back envelope, unlike the persistent `->` arrow that sets-and-holds.
 var highlightChannel = map[string]string{
 	"flash":     "color",
 	"strike":    "strike",
 	"underline": "underline",
 	"enlarge":   "scale",
 	"wiggle":    "wiggle",
+}
+
+// modKeyVal splits a `key:value` modifier cell. ok is false when there is no
+// colon (windows, durations, `stagger 0.03s`, `by name` carry none) or when
+// either side is empty. This is the one gate that recognizes the unified
+// `ease:`/`transition:`/`in:`/`ou:`/`highlight:` modifier family.
+func modKeyVal(c string) (key, val string, ok bool) {
+	i := strings.IndexByte(c, ':')
+	if i <= 0 || i == len(c)-1 {
+		return "", "", false
+	}
+	key, val = c[:i], c[i+1:]
+	if strings.ContainsAny(key, " \t") {
+		return "", "", false
+	}
+	return key, val, true
 }
 
 func parseDurToken(tok string) (float64, bool, error) {
@@ -366,7 +393,82 @@ func ParseFile(src string) ([]Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
-	lines := sc.Lines()
+	return parseLogicalLines(sc.Lines())
+}
+
+func hasSceneDefs(lines []LogicalLine) bool {
+	for _, ll := range lines {
+		if _, ok := sceneDefHeader(ll); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func sceneDefHeader(ll LogicalLine) (string, bool) {
+	if ll.Indent != 0 {
+		return "", false
+	}
+	trimmed := strings.TrimSpace(ll.Text)
+	if !strings.HasPrefix(trimmed, "scene ") || !strings.HasSuffix(trimmed, ":") {
+		return "", false
+	}
+	name := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "scene "), ":"))
+	return name, name != ""
+}
+
+func parseSceneDefLines(lines []LogicalLine) ([]Stmt, error) {
+	var out []Stmt
+	var main []LogicalLine
+	flushMain := func() error {
+		if len(main) == 0 {
+			return nil
+		}
+		stmts, err := parseLogicalLines(main)
+		if err != nil {
+			return err
+		}
+		out = append(out, stmts...)
+		main = nil
+		return nil
+	}
+
+	for i := 0; i < len(lines); {
+		name, ok := sceneDefHeader(lines[i])
+		if !ok {
+			main = append(main, lines[i])
+			i++
+			continue
+		}
+		if err := flushMain(); err != nil {
+			return nil, err
+		}
+		start := lines[i]
+		i++
+		var bodyLines []LogicalLine
+		for i < len(lines) {
+			if _, next := sceneDefHeader(lines[i]); next {
+				break
+			}
+			bodyLines = append(bodyLines, lines[i])
+			i++
+		}
+		body, err := parseLogicalLines(bodyLines)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, SceneDefStmt{Name: name, Body: body, Line: start.Line})
+	}
+	if err := flushMain(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func parseLogicalLines(lines []LogicalLine) ([]Stmt, error) {
+	if hasSceneDefs(lines) {
+		return parseSceneDefLines(lines)
+	}
 	var stmts []Stmt
 	var curRecord *RecordStmt
 	var curBlock *BlockStmt
@@ -517,6 +619,12 @@ func ParseFile(src string) ([]Stmt, error) {
 		switch {
 		case strings.HasPrefix(trimmed, "scene "):
 			stmts = append(stmts, SceneStmt{Name: strings.TrimSpace(trimmed[6:])})
+		case strings.HasPrefix(trimmed, "run "):
+			name := strings.TrimSpace(trimmed[4:])
+			if name == "" {
+				return nil, fmt.Errorf("line %d: run needs a scene name", ln)
+			}
+			stmts = append(stmts, RunStmt{Name: name, Line: ln})
 		case strings.HasPrefix(trimmed, "extern fn "):
 			rest := strings.TrimSpace(trimmed[10:])
 			name := rest
@@ -713,12 +821,8 @@ func parseBlockHeader(body string, ln int) (*BlockStmt, error) {
 			return nil, fmt.Errorf("line %d: bad block duration %q", ln, fields[0])
 		}
 		b.DurS = d
-		// legacy whitespace form `| 4s linear`: a trailing ease becomes a default.
-		for _, extra := range fields[1:] {
-			if !easeNames[extra] {
-				return nil, fmt.Errorf("line %d: trailing token %q in block header — put modifiers in their own `|` cell (`| %s | %s`)", ln, extra, fields[0], extra)
-			}
-			b.DefMods = append(b.DefMods, RowMod{Kind: "ease", Name: extra})
+		if len(fields) > 1 {
+			return nil, fmt.Errorf("line %d: trailing token %q in block header — put modifiers in their own `|` cell (`| %s | ease:smooth`)", ln, fields[1], fields[0])
 		}
 	}
 	// Remaining cells: default modifiers, plus an optional inline first row
@@ -744,6 +848,12 @@ func splitCells(body string) []string {
 	return cells
 }
 
+// isInlineBlockHeader reports whether a `|`-line following an inline block header
+// starts a new sequential block rather than adding a windowed row to the current
+// one. A leading duration only reads as a sub-window when it is strictly shorter
+// than the current block; when it is `>=` the block's length it cannot fit as a
+// window (e.g. consecutive `| 1s | … -> …` lines) so it opens a new block. A
+// transition cell, or a transition default on the block, also forces a new block.
 func isInlineBlockHeader(body string, curBlock *BlockStmt) bool {
 	cells := splitCells(body)
 	if len(cells) < 2 {
@@ -754,15 +864,22 @@ func isInlineBlockHeader(body string, curBlock *BlockStmt) bool {
 		return false
 	}
 	if fields[0] != "each" {
-		if _, _, err := parseDurToken(fields[0]); err != nil {
+		d, _, err := parseDurToken(fields[0])
+		if err != nil {
 			return false
+		}
+		// A leading absolute duration that can't fit as a sub-window of the
+		// current block opens a new sequential block. Percent windows are
+		// relative, so they always read as a sub-window and never split.
+		if !strings.HasSuffix(fields[0], "%") && d >= curBlock.DurS {
+			return true
 		}
 	}
 	if !hasEditCell(cells[1:]) {
 		return false
 	}
 	for _, c := range cells[1 : len(cells)-1] {
-		if transitionNames[c] {
+		if k, _, ok := modKeyVal(c); ok && k == "transition" {
 			return true
 		}
 	}
@@ -788,10 +905,11 @@ func hasEditCell(cells []string) bool {
 // must be the last cell on the line; every other cell is a modifier. This is
 // the one rule shared by block headers and rows.
 func parseCells(cells []string, ln int) ([]RowMod, *RowOp, error) {
-	// Highlight (transient modifier) row: a channel keyword cell followed by a
-	// trailing subject cell, with no `->`. e.g. `wiggle | tour.sub("x")`.
-	if hi := highlightCellIndex(cells); hi >= 0 && !hasEditCell(cells) {
-		return parseHighlightCells(cells, hi, ln)
+	// Subject-verb row: an `in:`/`ou:`/`highlight:` cell takes the last cell as
+	// its subject and carries no `->`. e.g. `in:fade | title`, `highlight:wiggle |
+	// t.sub("x")`. Everything else is an ordinary modifier (ease, window, …).
+	if vi := subjectVerbCellIndex(cells); vi >= 0 && !hasEditCell(cells) {
+		return parseSubjectVerbCells(cells, vi, ln)
 	}
 	var mods []RowMod
 	for i, c := range cells {
@@ -817,53 +935,129 @@ func parseCells(cells []string, ln int) ([]RowMod, *RowOp, error) {
 	return mods, nil, nil
 }
 
-// highlightCellIndex returns the index of the first cell that is a transient
-// modifier keyword (`wiggle`, `flash`, …), or -1 if none.
-func highlightCellIndex(cells []string) int {
+// subjectVerbCellIndex returns the index of the first `in:`/`ou:`/`highlight:`
+// cell, or -1 if none. These verbs name an action on a subject given in the last
+// cell rather than a `->` edit.
+func subjectVerbCellIndex(cells []string) int {
 	for i, c := range cells {
-		if _, ok := highlightChannel[c]; ok {
-			return i
+		if k, _, ok := modKeyVal(c); ok {
+			switch k {
+			case "in", "ou", "highlight":
+				return i
+			}
 		}
 	}
 	return -1
 }
 
-// parseHighlightCells builds a `highlight` RowOp from a modifier row: the keyword
-// at hiIdx names the channel, the last cell is the target span, and any remaining
-// cells (ease, window, …) are ordinary modifiers.
-func parseHighlightCells(cells []string, hiIdx, ln int) ([]RowMod, *RowOp, error) {
+// parseSubjectVerbCells builds an enter/exit/highlight RowOp: the verb cell at
+// viIdx names the preset or channel, the last cell is the subject span/object,
+// and any remaining cells (ease, window, …) are ordinary modifiers.
+func parseSubjectVerbCells(cells []string, viIdx, ln int) ([]RowMod, *RowOp, error) {
 	last := len(cells) - 1
-	if hiIdx >= last {
-		return nil, nil, fmt.Errorf("line %d: transient modifier %q needs a target span cell, e.g. `%s | text.sub(\"...\")`", ln, cells[hiIdx], cells[hiIdx])
+	if viIdx >= last {
+		return nil, nil, fmt.Errorf("line %d: %q needs a subject cell, e.g. `%s | title`", ln, cells[viIdx], cells[viIdx])
 	}
+	verbKey, verbVal, _ := modKeyVal(cells[viIdx])
 	var mods []RowMod
 	for i, c := range cells {
-		if i == hiIdx || i == last {
+		if i == viIdx || i == last {
 			continue
 		}
 		if c == "" {
 			return nil, nil, fmt.Errorf("line %d: empty cell", ln)
 		}
-		if _, ok := highlightChannel[c]; ok {
-			return nil, nil, fmt.Errorf("line %d: only one transient modifier per row (%q and %q)", ln, cells[hiIdx], c)
+		if j := subjectVerbCellIndex([]string{c}); j == 0 {
+			return nil, nil, fmt.Errorf("line %d: only one verb per row (%q and %q)", ln, cells[viIdx], c)
 		}
 		mod, err := parseModCell(c, ln)
 		if err != nil {
 			return nil, nil, err
 		}
-		switch mod.Kind {
-		case "transition":
-			return nil, nil, fmt.Errorf("line %d: transition modifier %q does not apply to transient text modifiers", ln, mod.Name)
-		case "pair":
-			return nil, nil, fmt.Errorf("line %d: pairing modifier %q does not apply to transient text modifiers", ln, mod.Name)
-		}
 		mods = append(mods, mod)
 	}
-	lhs, err := ParseExpr(cells[last])
+	subjects, err := parseSubjectList(cells[last])
 	if err != nil {
 		return nil, nil, fmt.Errorf("line %d: %v", ln, err)
 	}
-	return mods, &RowOp{Kind: "highlight", LHS: lhs, Highlight: cells[hiIdx]}, nil
+	subject := subjects[0]
+	switch verbKey {
+	case "highlight":
+		if _, ok := highlightChannel[verbVal]; !ok {
+			return nil, nil, fmt.Errorf("line %d: unknown highlight channel %q", ln, verbVal)
+		}
+		return mods, &RowOp{Kind: "highlight", LHS: subject, Subjects: subjects, Highlight: verbVal}, nil
+	default: // "in" / "ou"
+		if _, ok := entrancePresets[verbVal]; !ok {
+			return nil, nil, fmt.Errorf("line %d: unknown %s: preset %q", ln, verbKey, verbVal)
+		}
+		kind := "enter"
+		if verbKey == "ou" {
+			kind = "exit"
+		}
+		return mods, &RowOp{Kind: kind, LHS: subject, Subjects: subjects, Preset: verbVal}, nil
+	}
+}
+
+func parseSubjectList(cell string) ([]Expr, error) {
+	parts, err := splitTopLevelCommas(cell)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Expr, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			return nil, fmt.Errorf("empty subject in comma list")
+		}
+		e, err := ParseExpr(part)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+func splitTopLevelCommas(s string) ([]string, error) {
+	var parts []string
+	start := 0
+	depth := 0
+	inStr := false
+	esc := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			if esc {
+				esc = false
+			} else if c == '\\' {
+				esc = true
+			} else if c == '"' {
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+			if depth < 0 {
+				return nil, fmt.Errorf("unbalanced subject list")
+			}
+		case ',':
+			if depth == 0 {
+				parts = append(parts, strings.TrimSpace(s[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	if inStr || depth != 0 {
+		return nil, fmt.Errorf("unbalanced subject list")
+	}
+	parts = append(parts, strings.TrimSpace(s[start:]))
+	return parts, nil
 }
 
 func parseRow(body string, ln int) (Row, error) {
@@ -901,14 +1095,27 @@ func parseModCell(c string, ln int) (RowMod, error) {
 	if c == "" {
 		return RowMod{}, fmt.Errorf("line %d: empty modifier cell", ln)
 	}
+	if key, val, ok := modKeyVal(c); ok {
+		switch key {
+		case "ease":
+			canon, ok := easeAlias[val]
+			if !ok {
+				return RowMod{}, fmt.Errorf("line %d: unknown ease %q", ln, val)
+			}
+			return RowMod{Kind: "ease", Name: canon}, nil
+		case "transition":
+			if !transitionNames[val] {
+				return RowMod{}, fmt.Errorf("line %d: unknown transition %q", ln, val)
+			}
+			return RowMod{Kind: "transition", Name: val}, nil
+		case "in", "ou", "highlight":
+			return RowMod{}, fmt.Errorf("line %d: %q needs a subject cell (`%s | subject`)", ln, c, c)
+		default:
+			return RowMod{}, fmt.Errorf("line %d: unknown modifier %q", ln, c)
+		}
+	}
 	fields := strings.Fields(c)
 	if len(fields) == 1 {
-		if transitionNames[c] {
-			return RowMod{Kind: "transition", Name: c}, nil
-		}
-		if easeNames[c] {
-			return RowMod{Kind: "ease", Name: c}, nil
-		}
 		if m := winRe.FindStringSubmatch(c); m != nil && strings.Contains(c, "-") {
 			a, asec, ok1 := parseWinBound(m[1])
 			b, bsec, ok2 := parseWinBound(m[2])
@@ -949,12 +1156,6 @@ func parseOpCell(c string, ln int) (RowOp, error) {
 	if c == "" {
 		return RowOp{}, fmt.Errorf("line %d: empty op cell", ln)
 	}
-	transition := ""
-	fields := strings.Fields(c)
-	if len(fields) > 0 && transitionNames[fields[0]] {
-		transition = fields[0]
-		c = strings.TrimSpace(c[len(fields[0]):])
-	}
 	i := strings.Index(c, "->")
 	if i < 0 {
 		return RowOp{}, fmt.Errorf("line %d: op cell must contain `->`: %q", ln, c)
@@ -962,36 +1163,10 @@ func parseOpCell(c string, ln int) (RowOp, error) {
 	lhsText := strings.TrimSpace(c[:i])
 	rhsText := strings.TrimSpace(c[i+2:])
 	if rhsText == "gone" {
-		return RowOp{}, fmt.Errorf("line %d: `gone` is not supported; tween an explicit field such as opacity instead", ln)
+		return RowOp{}, fmt.Errorf("line %d: `gone` is not supported; use `ou:fade | obj` to dismiss an object", ln)
 	}
-	if strings.Contains(lhsText, "{") || strings.Contains(lhsText, "}") {
-		name, overrides, err := parseUpdateExpr(lhsText, ln)
-		if err != nil {
-			return RowOp{}, err
-		}
-		// For broadcast enter tweens (`roots[* as i].mark{...} -> roots[i].mark`),
-		// the names won't match exactly. Allow them through if the LHS contains `[*`.
-		if rhsText != name && !strings.Contains(name, "[*") {
-			return RowOp{}, fmt.Errorf("line %d: object update tween is a self-transition; both sides must name the same object (`%s{...} -> %s`), got %q", ln, name, name, rhsText)
-		}
-		if len(overrides) == 0 {
-			return RowOp{}, fmt.Errorf("line %d: object update tween needs at least one overridden field, e.g. `%s{opacity: 0} -> %s`", ln, name, name)
-		}
-		// For broadcast: store the full LHS path (with `[*`) as the enter name.
-		// The RHS is stored separately in LHS/RHS of RowOp for broadcast resolution.
-		if strings.Contains(name, "[*") {
-			// Parse name as LHS expr and rhsText as RHS expr for broadcast enter
-			lhsE, err2 := ParseExpr(name)
-			if err2 != nil {
-				return RowOp{}, fmt.Errorf("line %d: %v", ln, err2)
-			}
-			rhsE, err2 := ParseExpr(rhsText)
-			if err2 != nil {
-				return RowOp{}, fmt.Errorf("line %d: %v", ln, err2)
-			}
-			return RowOp{Kind: "enter_broadcast", LHS: lhsE, RHS: rhsE, Overrides: overrides}, nil
-		}
-		return RowOp{Kind: "enter", EnterName: name, Overrides: overrides}, nil
+	if strings.ContainsAny(lhsText, "{}") {
+		return RowOp{}, fmt.Errorf("line %d: object-update entry syntax is gone; use `in:fade | obj` (presets: draw, fade, pop, draw_fade)", ln)
 	}
 	lhs, err := ParseExpr(lhsText)
 	if err != nil {
@@ -1001,56 +1176,5 @@ func parseOpCell(c string, ln int) (RowOp, error) {
 	if err != nil {
 		return RowOp{}, fmt.Errorf("line %d: %v", ln, err)
 	}
-	return RowOp{Kind: "arrow", LHS: lhs, RHS: rhs, Transition: transition}, nil
-}
-
-// parseUpdateExpr parses an update expression `name{field: expr, …}`.
-func parseUpdateExpr(s string, ln int) (string, []EnterField, error) {
-	open := strings.IndexByte(s, '{')
-	if open < 0 || !strings.HasSuffix(s, "}") {
-		return "", nil, fmt.Errorf("line %d: object update tween left side must be `obj{field: expr, ...}`, got %q", ln, s)
-	}
-	name := strings.TrimSpace(s[:open])
-	if name == "" {
-		return "", nil, fmt.Errorf("line %d: object update tween left side has no object name: %q", ln, s)
-	}
-	var fields []EnterField
-	for _, part := range splitTopLevel(s[open+1 : len(s)-1]) {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		ci := strings.IndexByte(part, ':')
-		if ci < 0 {
-			return "", nil, fmt.Errorf("line %d: bad override %q (want `field: expr`)", ln, part)
-		}
-		key := strings.TrimSpace(part[:ci])
-		ex, err := ParseExpr(strings.TrimSpace(part[ci+1:]))
-		if err != nil {
-			return "", nil, fmt.Errorf("line %d: %v", ln, err)
-		}
-		fields = append(fields, EnterField{Name: key, Val: ex})
-	}
-	return name, fields, nil
-}
-
-// splitTopLevel splits on commas that are not nested inside (), [], or {}.
-func splitTopLevel(s string) []string {
-	var out []string
-	depth := 0
-	start := 0
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '(', '[', '{':
-			depth++
-		case ')', ']', '}':
-			depth--
-		case ',':
-			if depth == 0 {
-				out = append(out, s[start:i])
-				start = i + 1
-			}
-		}
-	}
-	return append(out, s[start:])
+	return RowOp{Kind: "arrow", LHS: lhs, RHS: rhs}, nil
 }

@@ -90,66 +90,66 @@ text caption:
   scale: 0.52
   color: color.white
 
-| 2.6s | smooth
-| stick{draw: 0} -> stick
-| caption{opacity: 0} -> caption
+| 2.6s | ease:smooth
+| in:draw | stick
+| in:fade | caption
 
-| 0.55s | smooth
+| 0.55s | ease:smooth
 | stick.stroke.end -> arrow
 | -.8 | stick.stroke.color -> color.gold
-| -.3 | linear | caption.text -> "stroke.end -> arrow"
+| -.3 | ease:linear | caption.text -> "stroke.end -> arrow"
 | caption.color -> color.gold
 
-| 2.55s | smooth
-| -.8 | morph | stick -> circ
-| -.3 | linear | caption.text -> "circle{radius: 0.85}"
+| 2.55s | ease:smooth
+| -.8 | transition:morph | stick -> circ
+| -.3 | ease:linear | caption.text -> "circle{radius: 0.85}"
 | caption.color -> color.gold
 
-| 2.55s | smooth
-| -.8 | morph | circ -> circ_f
-| -.3 | linear | caption.text -> "circle{radius: 1.35}"
+| 2.55s | ease:smooth
+| -.8 | transition:morph | circ -> circ_f
+| -.3 | ease:linear | caption.text -> "circle{radius: 1.35}"
 | caption.color -> color.white
 
-| 2.55s | smooth
-| -.8 | morph | circ_f -> ell
-| -.3 | linear | caption.text -> "ellipse{rx: 1.55, ry: 0.85}"
+| 2.55s | ease:smooth
+| -.8 | transition:morph | circ_f -> ell
+| -.3 | ease:linear | caption.text -> "ellipse{rx: 1.55, ry: 0.85}"
 | caption.color -> color.pink
 
-| 2.55s | smooth
-| -.8 | morph | ell -> ell_f
-| -.3 | linear | caption.text -> "ellipse{rx: 1.15, ry: 1.55}"
+| 2.55s | ease:smooth
+| -.8 | transition:morph | ell -> ell_f
+| -.3 | ease:linear | caption.text -> "ellipse{rx: 1.15, ry: 1.55}"
 | caption.color -> color.gold
 
-| 2.55s | smooth
-| -.8 | morph | ell_f -> arc_p
-| -.3 | linear | caption.text -> "arc{radius: 1.45, start: 0, end: math.pi / 2}"
+| 2.55s | ease:smooth
+| -.8 | transition:morph | ell_f -> arc_p
+| -.3 | ease:linear | caption.text -> "arc{radius: 1.45, start: 0, end: math.pi / 2}"
 | caption.color -> color.white
 
-| 2.55s | smooth
-| -.8 | morph | arc_p -> sector_p
-| -.3 | linear | caption.text -> "sector{radius: 1.45, start: 0, end: math.pi / 3}"
+| 2.55s | ease:smooth
+| -.8 | transition:morph | arc_p -> sector_p
+| -.3 | ease:linear | caption.text -> "sector{radius: 1.45, start: 0, end: math.pi / 3}"
 | caption.color -> color.white
 
-| 2.55s | smooth
-| -.8 | morph | sector_p -> rect_p
-| -.3 | linear | caption.text -> "rect{w: 2.2, h: 1.15}"
+| 2.55s | ease:smooth
+| -.8 | transition:morph | sector_p -> rect_p
+| -.3 | ease:linear | caption.text -> "rect{w: 2.2, h: 1.15}"
 | caption.color -> color.gold
 
-| 2.55s | smooth
-| -.8 | morph | rect_p -> rect_f
-| -.3 | linear | caption.text -> "rect{w: 1.65, h: 1.65, corner_radius: 0.14}"
+| 2.55s | ease:smooth
+| -.8 | transition:morph | rect_p -> rect_f
+| -.3 | ease:linear | caption.text -> "rect{w: 1.65, h: 1.65, corner_radius: 0.14}"
 | caption.color -> color.white
 
-| 2.55s | smooth
-| -.8 | morph | rect_f -> poly
-| -.3 | linear | caption.text -> "regular_polygon{sides: 6, radius: 1.25, angle: math.pi / 6}"
+| 2.55s | ease:smooth
+| -.8 | transition:morph | rect_f -> poly
+| -.3 | ease:linear | caption.text -> "regular_polygon{sides: 6, radius: 1.25, angle: math.pi / 6}"
 | caption.color -> color.cyan
 
-| 2.55s | smooth
-| -.8 | morph | poly -> poly_f
-| -.3 | linear | caption.text -> "regular_polygon{sides: 5, radius: 1.45, angle: 0}"
+| 2.55s | ease:smooth
+| -.8 | transition:morph | poly -> poly_f
+| -.3 | ease:linear | caption.text -> "regular_polygon{sides: 5, radius: 1.45, angle: 0}"
 | caption.color -> color.gold
 
-| 0.6s | smooth
+| 0.6s | ease:smooth
 | poly_f.opacity -> 0
 | caption.opacity -> 0

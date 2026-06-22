@@ -1,0 +1,278 @@
+scene intro_tour
+
+# Обзорное видео про язык pdtt — на русском.
+#
+# Идея ролика: слева на экране всё время виден pdtt-исходник, который ПРЯМО
+# СЕЙЧАС рисует анимацию справа. Сначала — главная мысль языка, потом по очереди:
+#   1. примитивы,
+#   2. морфинг между ними,
+#   3. живой текст (цвет / размер / тряска / зачёркивание),
+#   4. графики функций.
+# Каждый блок: меняем подпись-исходник слева → запускаем то, что в нём написано.
+
+frame frame:
+  at: [0, 0]
+  w: 11
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Заголовок секции (сверху по центру) и панель исходника (слева).
+# Оба живут всю сцену, мы лишь переписываем их .text по ходу ролика.
+# ─────────────────────────────────────────────────────────────────────────────
+
+text head:
+  text: "pdtt"
+  at: [0, 2.62]
+  scale: 0.72
+  color: color.white
+
+# Панели исходника — по одной на блок, все в одном месте слева.
+# Объявлены в state-секции, поэтому в строках можно держать любой pdtt
+# (с пайпами `|` и стрелками `->`), что на time-линиях было бы нельзя.
+text c1:
+  text: |
+    dot d:   at: [x, y]
+    path p:  points: circle{r}
+    path q:  points: rect{w, h}
+    closed: 1   fill.color: ...
+  at: [-2.95, 0.05]
+  scale: 0.42
+  color: color.cyan
+
+text c2:
+  text: |
+    | transition:morph | a -> b
+
+    одна форма
+    перетекает в другую
+  at: [-2.95, 0.05]
+  scale: 0.46
+  color: color.cyan
+
+text c3:
+  text: |
+    t.sub("...").color -> yellow
+    | highlight:enlarge | t.sub("...")
+    | highlight:wiggle | t.sub("...")
+    .strike -> 1
+  at: [-2.95, 0.05]
+  scale: 0.42
+  color: color.cyan
+
+text c4:
+  text: |
+    plot p:
+      fn: sin(k * x)
+
+    | k -> 4
+  at: [-2.95, 0.05]
+  scale: 0.46
+  color: color.cyan
+
+path divider:
+  at: [0, 0]
+  points: [[0.05, -2.35], [0.05, 2.05]]
+  stroke.color: color.white @ 32%
+  stroke.width: 0.018
+  draw: 0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Демо-объекты ПРАВОЙ половины. Все объявлены заранее и неактивны —
+# включаются ровно в свой момент ниже.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# --- интро ---
+text intro_big:
+  text: "опиши сцену —\nполучи видео"
+  at: [0, 0.2]
+  scale: 0.9
+  color: color.white
+
+text intro_sub:
+  text: "декларативный язык анимации"
+  at: [0, -1.25]
+  scale: 0.42
+  color: color.light_gray
+
+# --- 1. примитивы (правая половина, центр ~ x = 2.75) ---
+dot p_dot:
+  at: [1.35, 1.25]
+  radius: 0.14
+  color: color.yellow
+
+path p_line:
+  at: [0, 0]
+  points: [[2.1, 1.25], [3.6, 1.25]]
+  stroke.color: color.pink
+  stroke.width: 0.035
+  stroke.end: arrow
+  draw: 0
+
+path p_circ:
+  at: [1.65, -0.35]
+  points: circle{radius: 0.62}
+  closed: 1
+  stroke.color: color.cyan
+  stroke.width: 0.035
+
+path p_box:
+  at: [3.55, -0.35]
+  points: rect{w: 1.15, h: 1.15, corner_radius: 0.1}
+  closed: 1
+  stroke.color: color.gold
+  stroke.width: 0.035
+  fill.color: color.gold @ 22%
+
+path p_tri:
+  at: [2.6, -1.7]
+  points: regular_polygon{sides: 3, radius: 0.7, angle: math.pi / 2}
+  closed: 1
+  stroke.color: color.green
+  stroke.width: 0.035
+
+# --- 2. морфинг (один объект, перетекает между формами) ---
+path m_circle:
+  at: [2.75, -0.1]
+  points: circle{radius: 0.95}
+  closed: 1
+  stroke.color: color.cyan
+  stroke.width: 0.04
+
+path m_square:
+  at: [2.75, -0.1]
+  points: rect{w: 1.7, h: 1.7}
+  closed: 1
+  stroke.color: color.pink
+  stroke.width: 0.04
+
+path m_tri:
+  at: [2.75, -0.1]
+  points: regular_polygon{sides: 3, radius: 1.1, angle: math.pi / 2}
+  closed: 1
+  stroke.color: color.gold
+  stroke.width: 0.04
+  fill.color: color.gold @ 25%
+
+path m_hex:
+  at: [2.75, -0.1]
+  points: regular_polygon{sides: 6, radius: 1.05, angle: 0}
+  closed: 1
+  stroke.color: color.green
+  stroke.width: 0.04
+
+# --- 3. живой текст ---
+text demo_text:
+  text: "pdtt красит,\nувеличивает\nи трясёт текст"
+  at: [2.75, 0.1]
+  scale: 0.62
+  color: color.white
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ВРЕМЕННАЯ ЛИНИЯ
+# ═════════════════════════════════════════════════════════════════════════════
+
+# ── Интро: главная мысль ──
+| 1.0s | ease:smooth
+| in:fade | head, intro_big
+
+| 0.9s | ease:smooth
+| in:fade | intro_sub
+
+| 1.4s
+
+# уводим интро, поднимаем разделитель
+| 0.8s | ease:smooth
+| intro_big.opacity -> 0
+| intro_sub.opacity -> 0
+| in:draw | divider
+
+# ── 1. Примитивы ──
+# Заголовок гасим, меняем текст в темноте, зажигаем заново — без наложения.
+| 0.9s | ease:smooth
+| -.5 | head.opacity -> 0
+| .5-.54 | head.text -> "1. Примитивы"
+| .55- | head.opacity -> 1
+| .5- | in:fade | c1
+
+| 1.3s | ease:smooth | stagger 0.18s
+| in:pop | p_dot
+| in:draw | p_line, p_circ, p_box, p_tri
+
+| 1.2s
+
+# убираем примитивы
+| 0.6s | ease:smooth
+| p_dot.opacity -> 0
+| p_line.opacity -> 0
+| p_circ.opacity -> 0
+| p_box.opacity -> 0
+| p_tri.opacity -> 0
+
+# ── 2. Морфинг ──
+| 0.9s | ease:smooth
+| -.5 | head.opacity -> 0
+| -.5 | c1.opacity -> 0
+| .5-.54 | head.text -> "2. Морфинг"
+| .55- | head.opacity -> 1
+| .5- | in:fade | c2
+
+| 0.9s | ease:smooth
+| in:draw | m_circle
+
+| 1.3s | ease:smooth | transition:morph | m_circle -> m_square
+| 1.3s | ease:smooth | transition:morph | m_square -> m_tri
+| 1.3s | ease:smooth | transition:morph | m_tri -> m_hex
+
+| 0.8s
+
+| 0.6s | ease:smooth
+| m_hex.opacity -> 0
+
+# ── 3. Живой текст ──
+| 0.9s | ease:smooth
+| -.5 | head.opacity -> 0
+| -.5 | c2.opacity -> 0
+| .5-.54 | head.text -> "3. Живой текст"
+| .55- | head.opacity -> 1
+| .5- | in:fade | c3
+
+| 0.9s | ease:smooth
+| in:draw | demo_text
+
+# красим слово
+| 1.0s | ease:smooth
+| demo_text.sub("красит").color -> color.yellow
+
+# увеличиваем слово (держим)
+| 1.0s | ease:smooth
+| demo_text.sub("увеличивает").scale -> 1.5
+
+# трясём слово (разовый эффект)
+| 1.1s | ease:smooth | highlight:wiggle | demo_text.sub("трясёт")
+
+# зачёркиваем
+| 0.9s | ease:smooth
+| demo_text.sub("текст").strike -> 1
+
+| 1.0s
+
+| 0.6s | ease:smooth
+| demo_text.draw -> 0
+
+run graph
+
+| 0.9s | ease:smooth
+| -.5 | head.opacity -> 0
+| .5-.54 | head.text -> "pdtt"
+| head.at -> [0, 0.5]
+| .55- | head.opacity -> 1
+
+text outro:
+  text: "сцена может жить в нескольких .pdtt файлах"
+  at: [0, -0.5]
+  scale: 0.5
+  color: color.light_gray
+
+| 0.9s | ease:smooth
+| in:fade | outro
+
+| 1.6s

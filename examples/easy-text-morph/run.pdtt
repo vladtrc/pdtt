@@ -21,6 +21,6 @@ dot c:
   stroke: color.white
   fill: color.pink @ 50%
 
-| 1s | a{opacity: 0} -> a     # a fades in (self-transition)
-| 1s | morph | a -> b
-| 1s | morph | b -> c
+| 1s | in:fade | a  # a fades in (self-transition)
+| 1s | transition:morph | a -> b
+| 1s | transition:morph | b -> c

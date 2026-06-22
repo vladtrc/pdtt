@@ -84,6 +84,11 @@ func newJobID() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
+// NewID returns a random 12-char hex render job ID.
+func NewID() (string, error) {
+	return newJobID()
+}
+
 func (s *Store) GetByID(ctx context.Context, id string) (*Job, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, scene, status, stage, COALESCE(error_message, ''),

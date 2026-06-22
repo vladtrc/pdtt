@@ -14,19 +14,21 @@ import (
 
 type easeFn func(float64) float64
 
+// smoothstep is the classic 3u²−2u³ S-curve; `smooth` and `ease_in_out` are the
+// same curve under both spellings.
+func smoothstep(u float64) float64 { return u * u * (3 - 2*u) }
+
 var easings = map[string]easeFn{
-	"linear":  func(u float64) float64 { return u },
-	"smooth":  func(u float64) float64 { return u * u * (3 - 2*u) },
-	"ease_in": func(u float64) float64 { return u * u },
-	"ease_out": func(u float64) float64 {
-		return 1 - (1-u)*(1-u)
-	},
+	"linear":      func(u float64) float64 { return u },
+	"smooth":      smoothstep,
+	"ease_in":     func(u float64) float64 { return u * u },
+	"ease_out":    func(u float64) float64 { return 1 - (1-u)*(1-u) },
+	"ease_in_out": smoothstep,
 	// Stronger ease-out: morph settles early, final value holds longer.
 	"ease_out_cubic": func(u float64) float64 {
 		x := 1 - u
 		return 1 - x*x*x
 	},
-	"ease_in_out": func(u float64) float64 { return u * u * (3 - 2*u) },
 }
 
 // textMorphReadU: once eased progress passes this, commit the destination
@@ -45,10 +47,24 @@ type Anim struct {
 	Line    int
 
 	started, done bool
-	start         []Value // captured start values per target (uniform, target-parallel verbs)
-	goal          []Value
-	textMorph     *textMorphAnim
-	state         any // typed per-verb run-time state (e.g. *morphAnim); replaces positional start[]
+	state         animState // typed per-verb state: plan captured at compile, values resolved in start
+}
+
+// animState is a verb's typed per-animation state — the plan captured when the
+// row is expanded plus the run-time values resolved in start(). Each verb owns a
+// struct (morphAnim, tweenAnim, warpAnim, recordArrowAnim) instead of scribbling
+// parallel slices onto the shared Anim.
+type animState interface {
+	start(a *Anim, rt *Runtime) error
+	step(a *Anim, rt *Runtime, u float64)
+}
+
+// drive wires a typed state into the anim's Start/Update hooks. Method values
+// carry the receiver, so no per-verb adapter closures are needed.
+func (a *Anim) drive(st animState) {
+	a.state = st
+	a.Start = st.start
+	a.Update = st.step
 }
 
 type textMorphAnim struct {
@@ -331,54 +347,88 @@ func Compile(stmts []Stmt) (*Runtime, error) {
 	rt := NewRuntime()
 	cursor := 0.0
 	scope := &Scope{rt: rt}
-
+	sceneDefs := map[string]SceneDefStmt{}
 	for _, st := range stmts {
-		switch v := st.(type) {
-		case SceneStmt:
-			rt.SceneName = v.Name
-		case ExternStmt:
-			if _, ok := builtins[v.Name]; !ok {
-				return nil, fmt.Errorf("extern fn %s has no Go stub in this prototype", v.Name)
+		if v, ok := st.(SceneDefStmt); ok {
+			if old, exists := sceneDefs[v.Name]; exists {
+				return nil, fmt.Errorf("line %d: scene %s already defined at line %d", v.Line, v.Name, old.Line)
 			}
-		case CaptureStmt:
-			if err := rt.addCapture(v, cursor); err != nil {
-				return nil, err
-			}
-		case FamilyStmt:
-			if err := rt.addFamily(v, scope); err != nil {
-				return nil, err
-			}
-		case RecordStmt:
-			if _, exists := rt.Groups[v.Name]; exists {
-				hasSet := false
-				hasMerge := false
-				for _, fd := range v.Fields {
-					if fd.Set {
-						hasSet = true
-						continue
-					}
-					if fd.Name != "for" {
-						hasMerge = true
-					}
-				}
-				if hasMerge {
-					if err := rt.mergeRecord(v); err != nil {
-						return nil, err
-					}
-				}
-				if hasSet {
-					rt.addSetEvents(v, cursor)
-				}
-			} else if err := rt.addRecord(v, scope); err != nil {
-				return nil, err
-			}
-		case BlockStmt:
-			dur, err := rt.expandBlock(v, cursor)
-			if err != nil {
-				return nil, err
-			}
-			cursor += dur
+			sceneDefs[v.Name] = v
 		}
+	}
+
+	var runStack []string
+	var compileList func([]Stmt) error
+	compileList = func(list []Stmt) error {
+		for _, st := range list {
+			switch v := st.(type) {
+			case SceneStmt:
+				rt.SceneName = v.Name
+			case SceneDefStmt:
+				continue
+			case RunStmt:
+				def, ok := sceneDefs[v.Name]
+				if !ok {
+					return fmt.Errorf("line %d: unknown scene %s", v.Line, v.Name)
+				}
+				for _, name := range runStack {
+					if name == v.Name {
+						return fmt.Errorf("line %d: recursive run %s", v.Line, v.Name)
+					}
+				}
+				runStack = append(runStack, v.Name)
+				if err := compileList(def.Body); err != nil {
+					return err
+				}
+				runStack = runStack[:len(runStack)-1]
+			case ExternStmt:
+				if _, ok := builtins[v.Name]; !ok {
+					return fmt.Errorf("extern fn %s has no Go stub in this prototype", v.Name)
+				}
+			case CaptureStmt:
+				if err := rt.addCapture(v, cursor); err != nil {
+					return err
+				}
+			case FamilyStmt:
+				if err := rt.addFamily(v, scope); err != nil {
+					return err
+				}
+			case RecordStmt:
+				if _, exists := rt.Groups[v.Name]; exists {
+					hasSet := false
+					hasMerge := false
+					for _, fd := range v.Fields {
+						if fd.Set {
+							hasSet = true
+							continue
+						}
+						if fd.Name != "for" {
+							hasMerge = true
+						}
+					}
+					if hasMerge {
+						if err := rt.mergeRecord(v); err != nil {
+							return err
+						}
+					}
+					if hasSet {
+						rt.addSetEvents(v, cursor)
+					}
+				} else if err := rt.addRecord(v, scope); err != nil {
+					return err
+				}
+			case BlockStmt:
+				dur, err := rt.expandBlock(v, cursor)
+				if err != nil {
+					return err
+				}
+				cursor += dur
+			}
+		}
+		return nil
+	}
+	if err := compileList(stmts); err != nil {
+		return nil, err
 	}
 	rt.Total = cursor
 
@@ -1297,9 +1347,9 @@ func (rt *Runtime) expandRow(row Row, w winState, start, dur float64, binds map[
 
 	switch row.Op.Kind {
 	case "enter":
-		return rt.expandEnter(row, w, mkAnim)
-	case "enter_broadcast":
-		return rt.expandEnterBroadcast(row, w, mkAnim)
+		return rt.expandEntrance(row, w, mkAnim, false)
+	case "exit":
+		return rt.expandEntrance(row, w, mkAnim, true)
 	case "highlight":
 		return rt.expandHighlight(row, w, mkAnim)
 	case "arrow":
@@ -1400,24 +1450,26 @@ const enlargePeak = 1.5
 // the persistent `->` arrow that sets-and-holds.
 func (rt *Runtime) expandHighlight(row Row, w winState, mk func(from, to float64, eb map[string]Value) *Anim) error {
 	binds := mk(0, 0, nil).Binds
-	variants, err := rt.expandExprStars(row.Op.LHS, binds)
-	if err != nil {
-		return fmt.Errorf("line %d: %v", row.Line, err)
-	}
 	channel := highlightChannel[row.Op.Highlight]
-	for k, variant := range variants {
-		v, err := (&Scope{rt: rt, binds: variant.binds}).Eval(variant.expr)
+	for _, subject := range rowSubjects(row) {
+		variants, err := rt.expandExprStars(subject, binds)
 		if err != nil {
 			return fmt.Errorf("line %d: %v", row.Line, err)
 		}
-		p, ok := v.(*PartState)
-		if !ok {
-			return fmt.Errorf("line %d: transient modifier %q applies to a text span; select one with `text.sub(\"...\")`", row.Line, row.Op.Highlight)
+		for k, variant := range variants {
+			v, err := (&Scope{rt: rt, binds: variant.binds}).Eval(variant.expr)
+			if err != nil {
+				return fmt.Errorf("line %d: %v", row.Line, err)
+			}
+			p, ok := v.(*PartState)
+			if !ok {
+				return fmt.Errorf("line %d: transient modifier %q applies to a text span; select one with `text.sub(\"...\")`", row.Line, row.Op.Highlight)
+			}
+			from := w.from + float64(k)*w.stagger
+			a := mk(from, w.to, variant.binds)
+			fillHighlight(a, p, channel)
+			rt.Anims = append(rt.Anims, a)
 		}
-		from := w.from + float64(k)*w.stagger
-		a := mk(from, w.to, variant.binds)
-		fillHighlight(a, p, channel)
-		rt.Anims = append(rt.Anims, a)
 	}
 	return nil
 }
@@ -1504,124 +1556,127 @@ func fillHighlight(a *Anim, p *PartState, channel string) {
 // declaration (its goal is just the type default, e.g. draw/opacity = 1).
 type litVal struct{ V Value }
 
-// expandEnter compiles a self-transition `obj{field: ov, ...} -> obj`. For each
-// overridden field it snaps the field to the phantom value `ov` (so the object
-// reads as overridden before the window — e.g. invisible at opacity 0), then
-// tweens it back to the object's declared value over the window. Because both
-// sides are the same object there is no structural pairing: it is a plain
-// per-field tween, never a morph.
-func (rt *Runtime) expandEnter(row Row, w winState, mk func(from, to float64, eb map[string]Value) *Anim) error {
-	binds := mk(0, 0, nil).Binds
-	ents, _, err := rt.verbSubjects(Ident(row.Op.EnterName), binds)
-	if err != nil {
-		return fmt.Errorf("line %d: %v", row.Line, err)
+// entrancePresets maps an `in:`/`ou:` preset name to the fields it animates and
+// the hidden value each takes before (entrance) or after (exit) the window.
+type presetField struct {
+	name   string
+	hidden float64
+}
+
+var entrancePresets = map[string][]presetField{
+	"draw":      {{"draw", 0}},
+	"fade":      {{"opacity", 0}},
+	"pop":       {{"opacity", 0}, {"scale", 0.2}},
+	"draw_fade": {{"draw", 0}, {"opacity", 0}},
+}
+
+func entitiesOf(v Value) []*Entity {
+	switch x := v.(type) {
+	case *Entity:
+		return []*Entity{x}
+	case *Group:
+		return x.Items
 	}
-	s := &Scope{rt: rt, binds: binds}
-	for _, e := range ents {
-		for _, ov := range row.Op.Overrides {
-			f := e.field(ov.Name)
-			// Goal = the field's declared value: its own definition if it has
-			// one, else the type default already sitting in f.Val.
-			var goal Expr
-			if f.Def != nil {
-				goal = f.Def
-			} else {
-				goal = litVal{V: f.Val}
-			}
-			// Snap to the phantom value and freeze it so initFields and the
-			// live evaluator leave it alone until the window tweens it back.
-			pv, err := s.Eval(ov.Val)
+	return nil
+}
+
+// expandEntrance compiles `in:PRESET | subject` (entrance) and `ou:PRESET |
+// subject` (exit). For each preset field it tweens between the subject's declared
+// value and the preset's hidden value: entrance snaps to hidden then tweens up
+// (marking the subject present), exit tweens declared→hidden then leaves. The
+// subject may broadcast (`ring[* as i].p`); each expansion is one self-transition,
+// never a morph.
+func (rt *Runtime) expandEntrance(row Row, w winState, mk func(from, to float64, eb map[string]Value) *Anim, isExit bool) error {
+	preset := entrancePresets[row.Op.Preset]
+	binds := mk(0, 0, nil).Binds
+	for _, subject := range rowSubjects(row) {
+		variants, err := rt.expandExprStars(subject, binds)
+		if err != nil {
+			return fmt.Errorf("line %d: %v", row.Line, err)
+		}
+		for k, variant := range variants {
+			v, err := (&Scope{rt: rt, binds: variant.binds}).Eval(variant.expr)
 			if err != nil {
 				return fmt.Errorf("line %d: %v", row.Line, err)
 			}
-			f.Val = coerceField(f.Name, pv)
-			f.Def = nil
-			f.Live = false
-			f.Frozen = true
-			a := mk(w.from, w.to, nil)
-			fillTween(a, FieldRef{E: e, F: f}, goal, -1, 0)
-			prevStart := a.Start
-			a.Start = func(a *Anim, rt *Runtime) error {
-				e.Active = true
-				if prevStart != nil {
-					return prevStart(a, rt)
-				}
-				return nil
+			ents := entitiesOf(v)
+			if ents == nil {
+				return fmt.Errorf("line %d: %s: subject is %T, want an object", row.Line, row.Op.Preset, v)
 			}
-			rt.Anims = append(rt.Anims, a)
+			from := w.from + float64(k)*w.stagger
+			for _, e := range ents {
+				for _, pf := range preset {
+					f := e.field(pf.name)
+					a := mk(from, w.to, variant.binds)
+					if isExit {
+						fillExit(a, e, f, pf.hidden)
+					} else {
+						fillEntrance(a, e, f, pf.hidden)
+					}
+					rt.Anims = append(rt.Anims, a)
+				}
+			}
 		}
 	}
 	return nil
 }
 
-// expandEnterBroadcast handles `roots[* as i].mark{opacity: 0} -> roots[i].mark`
-// — a broadcast enter tween over family members.
-func (rt *Runtime) expandEnterBroadcast(row Row, w winState, mk func(from, to float64, eb map[string]Value) *Anim) error {
-	lhsExpr := row.Op.LHS // e.g. AttrE{X: IndexE{X: Ident("roots"), I:nil, BindName:"i"}, Name: "mark"}
-	binds := mk(0, 0, nil).Binds
-	variants, err := rt.expandRowVariants(lhsExpr, row.Op.RHS, binds)
-	if err != nil {
-		return fmt.Errorf("line %d: %v", row.Line, err)
+func rowSubjects(row Row) []Expr {
+	if len(row.Op.Subjects) > 0 {
+		return row.Op.Subjects
 	}
-	seenTargets := map[string]bool{}
-	for k, variant := range variants {
-		s := &Scope{rt: rt, binds: variant.rhs.binds}
-		lv, err := s.Eval(variant.lhs.expr)
-		if err != nil {
-			return fmt.Errorf("line %d: enter_broadcast: %v", row.Line, err)
+	return []Expr{row.Op.LHS}
+}
+
+// fillEntrance snaps the field to its hidden value (frozen, so initFields and the
+// live evaluator leave it alone) and tweens back to the declared value, marking
+// the entity present when the window starts.
+func fillEntrance(a *Anim, e *Entity, f *Field, hidden float64) {
+	var goal Expr
+	if f.Def != nil {
+		goal = f.Def
+	} else {
+		goal = litVal{V: f.Val}
+	}
+	f.Val = coerceField(f.Name, hidden)
+	f.Def = nil
+	f.Live = false
+	f.Frozen = true
+	fillTween(a, FieldRef{E: e, F: f}, goal, -1, 0)
+	prevStart := a.Start
+	a.Start = func(a *Anim, rt *Runtime) error {
+		e.Active = true
+		if prevStart != nil {
+			return prevStart(a, rt)
 		}
-		e, ok := lv.(*Entity)
-		if !ok {
-			return fmt.Errorf("line %d: enter_broadcast target is %T", row.Line, lv)
+		return nil
+	}
+}
+
+// fillExit tweens the field from its current declared value down to the hidden
+// value, freezing it at the start so live-eval can't fight the tween, and marks
+// the entity absent once the window completes.
+func fillExit(a *Anim, e *Entity, f *Field, hidden float64) {
+	fillTween(a, FieldRef{E: e, F: f}, litVal{V: hidden}, -1, 0)
+	prevStart := a.Start
+	a.Start = func(a *Anim, rt *Runtime) error {
+		f.Def = nil
+		f.Live = false
+		f.Frozen = true
+		if prevStart != nil {
+			return prevStart(a, rt)
 		}
-		rv, err := s.Eval(variant.rhs.expr)
-		if err != nil {
-			return fmt.Errorf("line %d: enter_broadcast RHS: %v", row.Line, err)
+		return nil
+	}
+	prevUpdate := a.Update
+	a.Update = func(a *Anim, rt *Runtime, u float64) {
+		if prevUpdate != nil {
+			prevUpdate(a, rt, u)
 		}
-		rhsEntity, ok := rv.(*Entity)
-		if !ok || rhsEntity != e {
-			return fmt.Errorf("line %d: object update tween is a self-transition; expanded sides refer to different objects", row.Line)
-		}
-		if err := rt.checkBoundExpr(variant.rhs.expr, variant.rhs.binds); err != nil {
-			return fmt.Errorf("line %d: %v", row.Line, err)
-		}
-		from := w.from + float64(k)*w.stagger
-		for _, ov := range row.Op.Overrides {
-			if err := rt.checkBoundExpr(ov.Val, variant.rhs.binds); err != nil {
-				return fmt.Errorf("line %d: %v", row.Line, err)
-			}
-			f := e.field(ov.Name)
-			if err := checkRowTargetConflicts(row.Line, seenTargets, []Ref{FieldRef{E: e, F: f}}); err != nil {
-				return err
-			}
-			var goal Expr
-			if f.Def != nil {
-				goal = f.Def
-			} else {
-				goal = litVal{V: f.Val}
-			}
-			pv, err2 := s.Eval(ov.Val)
-			if err2 != nil {
-				return fmt.Errorf("line %d: %v", row.Line, err2)
-			}
-			f.Val = coerceField(f.Name, pv)
-			f.Def = nil
-			f.Live = false
-			f.Frozen = true
-			a := mk(from, w.to, variant.rhs.binds)
-			fillTween(a, FieldRef{E: e, F: f}, goal, -1, 0)
-			prevStart := a.Start
-			a.Start = func(a *Anim, rt *Runtime) error {
-				e.Active = true
-				if prevStart != nil {
-					return prevStart(a, rt)
-				}
-				return nil
-			}
-			rt.Anims = append(rt.Anims, a)
+		if u >= 1 {
+			e.Active = false
 		}
 	}
-	return nil
 }
 
 func firstNonNil(a, b Value) Value {
@@ -1739,70 +1794,98 @@ func (rt *Runtime) entityTrailRef(lhs Expr, binds map[string]Value) (*Entity, []
 	return e, trail, true
 }
 
+// tweenAnim is the typed state for a standard field tween (`field -> expr`). It
+// also carries the text-morph special case: when the tweened field is a text
+// entity's glyph string, the outline is morphed contour-by-contour up to
+// textMorphReadU, then the crisp destination string is committed.
+type tweenAnim struct {
+	// plan
+	ref       Ref
+	fr        FieldRef // valid when isField
+	isField   bool
+	textField bool // tweening a text entity's `text` field → morph glyphs, not lerp
+	rhs       Expr
+	elemIdx   int
+	elemN     int
+
+	// run-time (resolved in start)
+	from Value
+	goal Value
+	tm   *textMorphAnim
+}
+
 // fillTween: standard tween; elemIdx >= 0 enables list-RHS positional pairing.
 func fillTween(a *Anim, ref Ref, rhs Expr, elemIdx, elemN int) {
 	a.Targets = []Ref{ref}
 	a.Inputs = exprInputDeps(rhs)
 	fr, isField := ref.(FieldRef)
-	textMorphField := isField && fr.F != nil && fr.E != nil &&
+	t := &tweenAnim{
+		ref:     ref,
+		fr:      fr,
+		isField: isField,
+		rhs:     rhs,
+		elemIdx: elemIdx,
+		elemN:   elemN,
+	}
+	t.textField = isField && fr.F != nil && fr.E != nil &&
 		fr.F.Name == "text" && isTextType(fr.E.Type)
-	live := func() bool {
-		return isField && fr.F != nil && fr.F.Live
+	a.drive(t)
+}
+
+func (t *tweenAnim) start(a *Anim, rt *Runtime) error {
+	rt.clearPost(t.ref.Key())
+	cur := t.ref.Get()
+	goal, err := evalTweenGoal(rt, t.rhs, a.Binds, t.elemIdx, t.elemN, cur)
+	if err != nil {
+		return fmt.Errorf("line %d: %v", a.Line, err)
 	}
-	a.Start = func(a *Anim, rt *Runtime) error {
-		rt.clearPost(ref.Key())
-		cur := ref.Get()
-		goal, err := evalTweenGoal(rt, rhs, a.Binds, elemIdx, elemN, cur)
-		if err != nil {
-			return fmt.Errorf("line %d: %v", a.Line, err)
-		}
-		a.start = []Value{cur}
-		a.goal = []Value{goal}
-		if textMorphField {
-			if fromStr, ok1 := valueAsString(cur); ok1 {
-				if goalStr, ok2 := valueAsString(goal); ok2 && fromStr != goalStr {
-					if tm, ok := prepareTextMorphAnim(fr.E, fromStr, goalStr); ok {
-						a.textMorph = tm
-					}
+	t.from, t.goal = cur, goal
+	if t.textField {
+		if fromStr, ok := valueAsString(cur); ok {
+			if goalStr, ok := valueAsString(goal); ok && fromStr != goalStr {
+				if tm, ok := prepareTextMorphAnim(t.fr.E, fromStr, goalStr); ok {
+					t.tm = tm
 				}
 			}
 		}
-		return nil
 	}
-	a.Update = func(a *Anim, rt *Runtime, u float64) {
-		goal, err := evalTweenGoal(rt, rhs, a.Binds, elemIdx, elemN, ref.Get())
-		if err == nil {
-			a.goal[0] = goal
+	return nil
+}
+
+func (t *tweenAnim) step(a *Anim, rt *Runtime, u float64) {
+	if goal, err := evalTweenGoal(rt, t.rhs, a.Binds, t.elemIdx, t.elemN, t.ref.Get()); err == nil {
+		t.goal = goal
+	}
+	if t.tm != nil {
+		t.stepTextMorph(a, rt, u)
+		return
+	}
+	from := t.from
+	if t.isField && t.fr.F != nil && t.fr.F.Live {
+		from = t.ref.Get() // re-read: live-eval already ran this frame
+	}
+	t.ref.Set(lerpValue(from, t.goal, u))
+	if u >= 1 && len(a.Inputs) > 0 {
+		rt.setPost(t.ref, t.rhs, a.Binds, t.elemIdx, t.elemN)
+	}
+}
+
+func (t *tweenAnim) stepTextMorph(a *Anim, rt *Runtime, u float64) {
+	if !t.tm.readable {
+		applyTextMorphStep(t.tm, u)
+	}
+	if !t.tm.readable && u >= textMorphReadU {
+		t.ref.Set(t.goal)
+		clearTextMorph(t.tm.E)
+		t.tm.readable = true
+	}
+	if u >= 1 {
+		if !t.tm.readable {
+			t.ref.Set(t.goal)
+			clearTextMorph(t.tm.E)
 		}
-		if a.textMorph != nil {
-			if !a.textMorph.readable {
-				applyTextMorphStep(a.textMorph, u)
-			}
-			if !a.textMorph.readable && u >= textMorphReadU {
-				ref.Set(a.goal[0])
-				clearTextMorph(a.textMorph.E)
-				a.textMorph.readable = true
-			}
-			if u >= 1 {
-				if !a.textMorph.readable {
-					ref.Set(a.goal[0])
-					clearTextMorph(a.textMorph.E)
-				}
-				if len(a.Inputs) > 0 {
-					rt.setPost(ref, rhs, a.Binds, elemIdx, elemN)
-				}
-			}
-			return
-		}
-		from := a.start[0]
-		if live() {
-			from = ref.Get() // re-read: live-eval already ran this frame
-		}
-		ref.Set(lerpValue(from, a.goal[0], u))
-		if u >= 1 {
-			if len(a.Inputs) > 0 {
-				rt.setPost(ref, rhs, a.Binds, elemIdx, elemN)
-			}
+		if len(a.Inputs) > 0 {
+			rt.setPost(t.ref, t.rhs, a.Binds, t.elemIdx, t.elemN)
 		}
 	}
 }
@@ -1879,65 +1962,42 @@ func clearTextMorph(e *Entity) {
 	e.layoutKey = ""
 }
 
+// warpAnim ramps an entity's warp blend from its current value to 1.
+type warpAnim struct {
+	ref  Ref
+	from float64
+}
+
 func (rt *Runtime) fillWarpArrow(a *Anim, ref Ref) {
 	a.Targets = []Ref{ref}
-	a.Start = func(a *Anim, rt *Runtime) error {
-		rt.clearPost(ref.Key())
-		a.start = []Value{ref.Get()}
-		return nil
-	}
-	a.Update = func(a *Anim, rt *Runtime, u float64) {
-		s, _ := asFloat(a.start[0])
-		ref.Set(lerp(s, 1, u))
-	}
+	a.drive(&warpAnim{ref: ref})
+}
+
+func (wa *warpAnim) start(a *Anim, rt *Runtime) error {
+	rt.clearPost(wa.ref.Key())
+	wa.from, _ = asFloat(wa.ref.Get())
+	return nil
+}
+
+func (wa *warpAnim) step(a *Anim, rt *Runtime, u float64) {
+	wa.ref.Set(lerp(wa.from, 1, u))
+}
+
+// recordArrowAnim tweens every field of a record toward a snapshot of the RHS,
+// paired by name (`frame -> home`).
+type recordArrowAnim struct {
+	lhs, rhs Expr
+	binds    map[string]Value
+
+	refs []Ref
+	from []Value
+	goal []Value
 }
 
 // record arrow: `frame -> home` — field-wise tweens paired by name.
 func (rt *Runtime) fillRecordArrow(a *Anim, lhs, rhs Expr, binds map[string]Value) {
-	var refs []Ref
 	a.Inputs = exprInputDeps(rhs)
-	a.Start = func(a *Anim, rt *Runtime) error {
-		s := &Scope{rt: rt, binds: binds}
-		lv, err := s.Eval(lhs)
-		if err != nil {
-			return err
-		}
-		e, ok := lv.(*Entity)
-		if !ok {
-			return fmt.Errorf("line %d: record arrow target is %T", a.Line, lv)
-		}
-		rv, err := s.Eval(rhs)
-		if err != nil {
-			return err
-		}
-		snap, ok := rv.(Snapshot)
-		if !ok {
-			return fmt.Errorf("line %d: record arrow RHS must be a snapshot, got %T", a.Line, rv)
-		}
-		a.start = nil
-		a.goal = nil
-		refs = nil
-		for name, goal := range snap.Fields {
-			if goal == nil {
-				continue
-			}
-			f, ok := e.Fields[name]
-			if !ok {
-				continue
-			}
-			refs = append(refs, FieldRef{E: e, F: f})
-			rt.clearPost(e.Name + "." + name)
-			a.start = append(a.start, f.Val)
-			a.goal = append(a.goal, goal)
-		}
-		a.Targets = refs
-		return nil
-	}
-	a.Update = func(a *Anim, rt *Runtime, u float64) {
-		for i, r := range refs {
-			r.Set(lerpValue(a.start[i], a.goal[i], u))
-		}
-	}
+	a.drive(&recordArrowAnim{lhs: lhs, rhs: rhs, binds: binds})
 	// static target list for liveness: all fields of the record
 	if id, ok := lhs.(Ident); ok {
 		if grp, ok := rt.Groups[string(id)]; ok && len(grp.Items) == 1 {
@@ -1946,5 +2006,47 @@ func (rt *Runtime) fillRecordArrow(a *Anim, lhs, rhs Expr, binds map[string]Valu
 				a.Targets = append(a.Targets, FieldRef{E: e, F: e.Fields[name]})
 			}
 		}
+	}
+}
+
+func (ra *recordArrowAnim) start(a *Anim, rt *Runtime) error {
+	s := &Scope{rt: rt, binds: ra.binds}
+	lv, err := s.Eval(ra.lhs)
+	if err != nil {
+		return err
+	}
+	e, ok := lv.(*Entity)
+	if !ok {
+		return fmt.Errorf("line %d: record arrow target is %T", a.Line, lv)
+	}
+	rv, err := s.Eval(ra.rhs)
+	if err != nil {
+		return err
+	}
+	snap, ok := rv.(Snapshot)
+	if !ok {
+		return fmt.Errorf("line %d: record arrow RHS must be a snapshot, got %T", a.Line, rv)
+	}
+	ra.refs, ra.from, ra.goal = nil, nil, nil
+	for name, goal := range snap.Fields {
+		if goal == nil {
+			continue
+		}
+		f, ok := e.Fields[name]
+		if !ok {
+			continue
+		}
+		ra.refs = append(ra.refs, FieldRef{E: e, F: f})
+		rt.clearPost(e.Name + "." + name)
+		ra.from = append(ra.from, f.Val)
+		ra.goal = append(ra.goal, goal)
+	}
+	a.Targets = ra.refs
+	return nil
+}
+
+func (ra *recordArrowAnim) step(a *Anim, rt *Runtime, u float64) {
+	for i, r := range ra.refs {
+		r.Set(lerpValue(ra.from[i], ra.goal[i], u))
 	}
 }

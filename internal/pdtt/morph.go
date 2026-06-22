@@ -316,9 +316,10 @@ func (m *morphAnim) start(a *Anim, rt *Runtime) error {
 	return nil
 }
 
-// step applies the morph at interpolation parameter u. Pure: reads m, writes
-// refs/entities, no closure captures and no rt dependency.
-func (m *morphAnim) step(u float64) {
+// step applies the morph at interpolation parameter u. Every run-time input was
+// captured in start(), so a and rt are unused: the body only reads m and writes
+// the refs/entities it already resolved.
+func (m *morphAnim) step(_ *Anim, _ *Runtime, u float64) {
 	s0 := m.srcOp
 	if m.outline && m.srcMove != nil && len(m.srcCtrs) == len(m.dstCtrs) && len(m.srcCtrs) > 0 {
 		m.srcMove.MorphContours = lerpLoops(m.srcCtrs, m.dstCtrs, u)
@@ -386,9 +387,7 @@ func (rt *Runtime) expandMorph(row Row, w winState, mk func(from, to float64, eb
 		}
 
 		a.Targets = []Ref{m.srcOpRef}
-		a.state = m
-		a.Start = func(a *Anim, rt *Runtime) error { return a.state.(*morphAnim).start(a, rt) }
-		a.Update = func(a *Anim, rt *Runtime, u float64) { a.state.(*morphAnim).step(u) }
+		a.drive(m)
 		rt.Anims = append(rt.Anims, a)
 	}
 

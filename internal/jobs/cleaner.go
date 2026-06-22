@@ -50,6 +50,10 @@ func (c *Cleaner) purge(ctx context.Context) {
 				continue
 			}
 		}
+		// Debugger frames + vars.json live in debug/{id}; same retention as the job.
+		if err := os.RemoveAll(filepath.Join(c.cfg.DataDir, "debug", e.ID)); err != nil {
+			c.logf("remove debug dir %s: %v", e.ID, err)
+		}
 		if err := c.store.DeleteByID(ctx, e.ID); err != nil {
 			c.logf("delete job %s: %v", e.ID, err)
 		}

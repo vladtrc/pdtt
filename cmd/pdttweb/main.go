@@ -46,6 +46,10 @@ func main() {
 		IdleTimeout:       idleTimeout,
 	}
 
+	// End the long-lived SSE streams when shutdown starts, otherwise Shutdown
+	// blocks on them until the deadline (and Ctrl-C appears to hang).
+	httpSrv.RegisterOnShutdown(srv.StopEvents)
+
 	go func() {
 		fmt.Printf("pdttweb listening on %s\n", addr)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

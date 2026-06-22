@@ -1,16 +1,20 @@
 package web
 
+import "strconv"
+
 const defaultScenePlaceholder = `scene shape_morph
 
-square s:
+path s:
   at: [0, 0]
-  side: 2
-  stroke: color.white
+  points: rect{w: 2, h: 2}
+  closed: 1
+  stroke.color: color.white
+  stroke.width: 0.04
 
-| 1s | s{draw: 0} -> s
+| 1s | in:draw | s
 `
 
-templ IndexPage(status renderStatusData, llmDocs string) {
+templ IndexPage(llmDocs string) {
 	<!DOCTYPE html>
 	<html lang="en" data-theme="dark">
 		<head>
@@ -25,9 +29,26 @@ templ IndexPage(status renderStatusData, llmDocs string) {
 				[x-cloak] {
 					display: none !important;
 				}
-				.htmx-request .htmx-placeholder {
-					display: none;
+				/* CodeJar editor: a contenteditable div with the browser's own caret
+				   (no transparent-textarea overlay, so the caret can't drift). */
+				#scene-editor {
+					font: 0.875rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+					tab-size: 2;
+					white-space: pre-wrap;
+					word-break: break-word;
+					overflow-wrap: break-word;
+					padding: 0.75rem;
+					overflow: auto;
+					outline: none;
+					color: #c9d1d9;
 				}
+				.c-comment { color: #6a737d; font-style: italic; }
+				.c-str     { color: #a5d6ff; }
+				.c-kw      { color: #ff7b72; font-weight: 600; }
+				.c-const   { color: #79c0ff; }
+				.c-op      { color: #d2a8ff; }
+				.c-pipe    { color: #ffa657; }
+				.c-num     { color: #f2cc60; }
 			</style>
 			<script>
 				window.pdttGenerateBusy = () => {
@@ -59,22 +80,43 @@ templ IndexPage(status renderStatusData, llmDocs string) {
 					done();
 				};
 
+				// pdtt syntax highlighter used by the CodeJar editor: one master regex
+				// consumes the text once so gaps between tokens are HTML-escaped exactly
+				// once. ponytail: covers the tokens that matter (comments, strings,
+				// scene kw, namespaced constants, ->, |, numbers); rest is plain text.
+				(() => {
+					const TOKEN = /(#[^\n]*)|("(?:[^"\\]|\\.)*")|\b(scene)\b|\b((?:color|corner|approx|math)\.[a-z_]+)\b|(->)|(\|)|(-?\d+(?:\.\d+)?)/g;
+					const CLASS = [null, "c-comment", "c-str", "c-kw", "c-const", "c-op", "c-pipe", "c-num"];
+					const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+					function highlight(src) {
+						let out = "", last = 0, m;
+						TOKEN.lastIndex = 0;
+						while ((m = TOKEN.exec(src))) {
+							out += esc(src.slice(last, m.index));
+							let gi = 1;
+							while (gi < m.length && m[gi] === undefined) gi++;
+							out += '<span class="' + CLASS[gi] + '">' + esc(m[0]) + "</span>";
+							last = m.index + m[0].length;
+						}
+						return out + esc(src.slice(last));
+					}
+					window.pdttHighlightEl = (el) => { el.innerHTML = highlight(el.textContent); };
+				})();
+
 				document.addEventListener("alpine:init", () => {
-					Alpine.data("renderPage", (initialServerBusy, initialRenderStage, initialRenderDetail, initialRenderElapsed) => ({
+					Alpine.data("renderPage", () => ({
 						busy: false,
 						aiBusy: false,
-						serverBusy: initialServerBusy,
-						renderStage: initialRenderStage,
-						renderDetail: initialRenderDetail,
-						renderElapsed: initialRenderElapsed,
+						lastRenderFailed: false,
+						settled: false,
 						generateStage: "",
 						generateDetail: "",
 						generateStartedAt: null,
 						generateElapsedSeconds: 0,
 						generateTimer: null,
 						freePromptOpen: false,
-						pipelineTitle: initialServerBusy ? "Render already running" : "Ready",
-						pipelineDetail: initialServerBusy ? initialRenderDetail : "Describe a scene, generate PDTT, then render it when ready.",
+						pipelineTitle: "Ready",
+						pipelineDetail: "Edit the scene or generate PDTT — it renders automatically.",
 
 						requestElement(event) {
 							return event.detail?.ctx?.sourceElement || event.detail?.ctx?.request?.elt || event.detail?.elt || event.target;
@@ -84,12 +126,20 @@ templ IndexPage(status renderStatusData, llmDocs string) {
 							return event.detail?.ctx?.response?.status || event.detail?.xhr?.status || 0;
 						},
 
+						// The single signal the user reads: does the preview on the right
+						// match the scene on the left? compiling → in flight; error → last
+						// render failed; synced → output reflects the current scene.
+						syncState() {
+							if (!this.settled || this.busy) return "compiling";
+							return this.lastRenderFailed ? "error" : "synced";
+						},
+
 						beforeRequest(event) {
 							const element = this.requestElement(event);
 							if (element?.id === "render-form") {
 								this.busy = true;
-								this.pipelineTitle = this.aiBusy ? "2/3 Sending generated scene to renderer" : "Sending scene to renderer";
-								this.pipelineDetail = "The pdtt scene was submitted. Waiting for the render server to start.";
+								this.pipelineTitle = "Compiling your scene…";
+								this.pipelineDetail = "Rendering the preview from the text on the left.";
 							}
 							if (element?.id === "generate-form") {
 								this.aiBusy = true;
@@ -109,11 +159,18 @@ templ IndexPage(status renderStatusData, llmDocs string) {
 
 						afterRequest(event) {
 							const element = this.requestElement(event);
-							const failed = this.responseStatus(event) >= 400;
+							const status = this.responseStatus(event);
+							const failed = status >= 400;
 							if (element?.id === "render-form") {
 								this.busy = false;
-								this.pipelineTitle = failed ? "Render failed" : "3/3 Render completed";
-								this.pipelineDetail = failed ? "The render server returned an error. Details are shown in the output." : "MP4 is ready and shown in the output.";
+								// 0 = aborted/replaced, 409 = server busy → the convergence
+								// guard retries; neither is a final answer for the scene.
+								if (status !== 0 && status !== 409) {
+									this.settled = true;
+									this.lastRenderFailed = failed;
+								}
+								this.pipelineTitle = failed ? "Compilation failed" : "Preview updated";
+								this.pipelineDetail = failed ? "See the error on the right; copy it into Claude to fix." : "The preview now matches your scene.";
 							}
 							if (element?.id === "generate-form") {
 								this.aiBusy = false;
@@ -123,7 +180,7 @@ templ IndexPage(status renderStatusData, llmDocs string) {
 									this.pipelineDetail = "The AI request returned an error. Details are shown below the prompt.";
 								} else if (!this.busy) {
 									this.pipelineTitle = "AI generated pdtt";
-									this.pipelineDetail = "The scene was inserted into the editor. Press render when ready.";
+									this.pipelineDetail = "The scene was inserted into the editor and is rendering automatically.";
 								}
 							}
 						},
@@ -136,21 +193,6 @@ templ IndexPage(status renderStatusData, llmDocs string) {
 								this.pipelineTitle = "AI: " + event.detail.stage;
 								this.pipelineDetail = event.detail.detail;
 							}
-						},
-
-						updateServerStatus(event) {
-							this.serverBusy = event.detail.busy;
-							this.renderStage = event.detail.stage;
-							this.renderDetail = event.detail.detail;
-							this.renderElapsed = event.detail.elapsed || "";
-							if (event.detail.busy) {
-								this.pipelineTitle = "Rendering: " + this.renderStageLabel();
-								this.pipelineDetail = event.detail.detail;
-							}
-						},
-
-						renderStageLabel() {
-							return this.renderStage + (this.renderElapsed ? " · " + this.renderElapsed : "");
 						},
 
 						startGenerateTimer() {
@@ -185,14 +227,66 @@ templ IndexPage(status renderStatusData, llmDocs string) {
 					}));
 				});
 			</script>
+			<script type="module">
+				import { CodeJar } from "https://cdn.jsdelivr.net/npm/codejar@4/+esm";
+				const ed = document.getElementById("scene-editor");
+				const hidden = document.getElementById("scene-input");
+				const form = document.getElementById("render-form");
+				const renderNow = () => window.htmx && window.htmx.trigger(form, "render-now");
+
+				// Convergence guard: the output must always match the editor text.
+				// hx-sync="this:replace" aborts an in-flight render when a newer one
+				// fires, so the aborted request never updates the output. We track the
+				// scene each request carries (sentCode) and the scene the server gave a
+				// *final* answer for (settledCode: a finished render or a real scene
+				// error). After every request, re-render while the editor differs from
+				// settledCode — so aborted requests keep retrying until the latest text
+				// renders, while a genuine scene error settles (no loop). htmx 4 event
+				// names: before:request / after:request, status under detail.ctx.response.
+				// after:request fires only on a real response (not on an aborted/replaced
+				// request — its successor converges instead), so no retry churn.
+				let sentCode = "";
+				let settledCode = null;
+				form.addEventListener("htmx:before:request", () => { sentCode = hidden.value; });
+				form.addEventListener("htmx:after:request", (e) => {
+					const status = e.detail?.ctx?.response?.status ?? 0;
+					if (status === 0) return;                    // aborted/replaced or network: another request is taking over
+					if (status < 500) settledCode = sentCode;    // 2xx or a real scene error is final
+					if (hidden.value !== settledCode) renderNow();
+				});
+
+				// SSE replaces the old per-second status polling. The server pushes AI
+				// generation progress on one long-lived stream; we route it into the
+				// existing Alpine handler, gated so only the generating tab reacts.
+				const events = new EventSource("/events");
+				events.addEventListener("generate-status", (e) => {
+					if (!window.pdttGenerateBusy || !window.pdttGenerateBusy()) return;
+					try {
+						window.dispatchEvent(new CustomEvent("generation-status", { detail: JSON.parse(e.data) }));
+					} catch {}
+				});
+
+				const jar = CodeJar(ed, window.pdttHighlightEl, { tab: "  " });
+				jar.updateCode(hidden.getAttribute("data-default") || "");
+				hidden.value = jar.toString();
+				jar.onUpdate((code) => { hidden.value = code; renderNow(); });
+				window.pdttSetScene = (text) => { jar.updateCode(text); hidden.value = text; renderNow(); };
+
+				// Fire the first render. htmx only attaches the form's render-now
+				// listener when it processes the form, which it does on its own
+				// DOMContentLoaded boot — after this deferred module runs. Triggering
+				// before that dispatches into the void and the default scene never
+				// renders. htmx.process(form) does the attach synchronously and is
+				// idempotent, so we can trigger immediately after.
+				if (window.htmx) { window.htmx.process(form); renderNow(); }
+			</script>
 		</head>
 		<body
 			class="min-h-screen bg-base-300 flex flex-col items-center p-6"
-			x-data={ alpineRenderPage(status) }
+			x-data="renderPage()"
 			x-on:generation-status.window="updateGenerationStatus($event)"
-			x-on:server-status.window="updateServerStatus($event)"
 		>
-			<div class="w-full max-w-5xl flex flex-col gap-6">
+			<div class="w-full max-w-[1800px] flex flex-col gap-6">
 				<header class="grid grid-cols-1 sm:grid-cols-3 items-start gap-3">
 					<div class="justify-self-start" data-copy-card>
 						<pre class="hidden" data-copy-source="docs">{ llmDocs }</pre>
@@ -207,40 +301,29 @@ templ IndexPage(status renderStatusData, llmDocs string) {
 					</div>
 					<h1 class="text-4xl font-bold text-primary text-center">pdtt playground</h1>
 					<div class="justify-self-end">
-						@PublicRenderStatus(status)
+						<div class="alert alert-success py-2 px-4 text-sm">
+							<span>server is ready</span>
+						</div>
 					</div>
-					@PublicGenerateStatus(generateStatusData{})
 				</header>
-				<div class="flex flex-col lg:flex-row gap-6">
-					<div class="flex-1 flex flex-col gap-3">
+				<div class="flex flex-col lg:flex-row gap-6 lg:h-[82vh]">
+					<div class="lg:w-2/5 flex flex-col gap-3 min-h-0">
 						<form
 							id="render-form"
 							hx-post="/render"
 							hx-target="#output"
 							hx-swap="innerHTML"
+							hx-trigger="render-now delay:800ms"
+							hx-sync="this:replace"
 							hx-indicator="#render-form, #output"
-							hx-disable="find textarea"
 							x-on:htmx:before:request="beforeRequest($event)"
 							x-on:htmx:before:swap="beforeSwap($event)"
 							x-on:htmx:after:request="afterRequest($event)"
-							class="flex flex-col gap-3"
+							class="flex flex-col gap-3 flex-1 min-h-0"
 						>
 							<label class="label text-sm font-semibold text-base-content/80">pdtt scene</label>
-							<textarea
-								id="scene-input"
-								name="scene"
-								class="textarea textarea-bordered bg-base-200 font-mono text-sm h-96 resize-none w-full"
-								placeholder={ defaultScenePlaceholder }
-								spellcheck="false"
-							></textarea>
-							<button type="submit" class="btn btn-primary w-full" x-bind:disabled="busy || serverBusy">
-								<span
-									class="loading loading-spinner loading-sm"
-									x-cloak
-									x-show="busy"
-								></span>
-								<span x-text="busy ? 'rendering: ' + renderStageLabel() : (serverBusy ? 'server busy: ' + renderStageLabel() : 'render')">render</span>
-							</button>
+							<div id="scene-editor" class="bg-base-200 border border-base-content/20 rounded-box flex-1 min-h-[55vh] lg:min-h-0 w-full" spellcheck="false"></div>
+							<textarea id="scene-input" name="scene" class="hidden" data-default={ defaultScenePlaceholder }></textarea>
 						</form>
 						<form
 							id="generate-form"
@@ -290,20 +373,38 @@ templ IndexPage(status renderStatusData, llmDocs string) {
 							</div>
 						</form>
 					</div>
-					<div class="flex-1 flex flex-col gap-3">
-						<label class="label text-sm font-semibold text-base-content/80">output</label>
-						<div
-							id="output"
-							class="bg-base-200 rounded-box border border-base-content/10 aspect-square w-full overflow-hidden flex items-center justify-center text-base-content/30"
-						>
-							<div class="htmx-placeholder text-center px-6" x-show="!busy && !serverBusy">
-								<div>result will appear here</div>
+					<div class="lg:w-3/5 flex flex-col gap-3 min-h-0">
+						<div class="flex items-center justify-between gap-3">
+							<label class="label text-sm font-semibold text-base-content/80 p-0">output</label>
+							<div class="text-sm" x-cloak>
+								<span class="badge badge-warning gap-2 py-3" x-show="syncState() === 'compiling'">
+									<span class="loading loading-spinner loading-xs"></span> compiling…
+								</span>
+								<span class="badge badge-error gap-1 py-3" x-show="syncState() === 'error'">✗ scene error — see output</span>
+								<span class="badge badge-success gap-1 py-3" x-show="syncState() === 'synced'">✓ preview matches your scene</span>
 							</div>
-							<div class="text-center px-6 flex flex-col items-center gap-3" x-cloak x-show="busy || serverBusy">
-								<span class="loading loading-spinner loading-lg"></span>
-								<div>
-									<div class="font-semibold text-base-content/80" x-text="pipelineTitle">Preparing...</div>
-									<div class="text-sm text-base-content/50" x-text="pipelineDetail">Waiting for status...</div>
+						</div>
+						<!-- relative wrapper: #output is swapped on every render, the blur
+						     overlay is a sibling so swaps never remove it. -->
+						<div class="relative flex-1 min-h-[55vh] lg:min-h-0">
+							<div
+								id="output"
+								class="absolute inset-0 bg-base-200 rounded-box border border-base-content/10 w-full overflow-auto flex flex-col"
+							>
+								@OutputSkeleton()
+							</div>
+							<div
+								class="absolute inset-0 rounded-box flex items-center justify-center backdrop-blur-sm bg-base-300/60 text-center px-6"
+								x-cloak
+								x-show="busy || !settled"
+								x-transition.opacity.duration.150ms
+							>
+								<div class="flex flex-col items-center gap-3">
+									<span class="loading loading-spinner loading-lg text-primary"></span>
+									<div>
+										<div class="font-semibold text-base-content/90" x-text="pipelineTitle">Compiling your scene…</div>
+										<div class="text-sm text-base-content/60" x-text="pipelineDetail"></div>
+									</div>
 								</div>
 							</div>
 						</div>
@@ -324,43 +425,122 @@ templ IndexPage(status renderStatusData, llmDocs string) {
 	</html>
 }
 
-templ PublicRenderStatus(status renderStatusData) {
-	<div
-		id="server-status"
-		class="text-sm"
-		hx-get="/render-status"
-		hx-trigger="every 2s"
-		hx-target="this"
-		hx-swap="outerHTML"
-		x-init={ alpineServerStatusInit(status) }
-	>
-		if status.Busy {
-			<div class="alert alert-warning py-2 px-4">
-				<span>server is busy · { status.Stage }{ renderElapsedSuffix(status.Elapsed) }</span>
-			</div>
-		} else {
-			<div class="alert alert-success py-2 px-4">
-				<span>server is ready</span>
-			</div>
-		}
+// OutputSkeleton is the player-shaped placeholder shown before the first frame
+// exists (and behind the blur overlay during it). ponytail: static chrome — no
+// "result will appear here" empty state; the real player swaps in over it.
+templ OutputSkeleton() {
+	<div class="m-auto w-full max-w-[55vh] p-2 flex flex-col gap-2 opacity-40 animate-pulse" aria-hidden="true">
+		<div class="aspect-square w-full rounded-box bg-base-300"></div>
+		<div class="flex items-center gap-2">
+			<div class="h-8 w-20 rounded-box bg-base-300"></div>
+			<div class="h-8 flex-1 rounded-box bg-base-300"></div>
+			<div class="h-8 w-16 rounded-box bg-base-300"></div>
+		</div>
+		<div class="h-20 w-full rounded-box bg-base-300"></div>
 	</div>
 }
 
-templ PublicGenerateStatus(status generateStatusData) {
-	<div
-		id="generate-status"
-		class="hidden"
-		hx-get="/generate-status"
-		hx-trigger="every 1s [pdttGenerateBusy()]"
-		hx-target="this"
-		hx-swap="outerHTML"
-		x-init={ alpineGenerateStatusInit(status) }
-	></div>
-}
+templ RenderCompleted(id string, fps int, count int) {
+	<div class="w-full flex flex-col gap-2 p-2" data-player data-id={ id } data-fps={ strconv.Itoa(fps) } data-count={ strconv.Itoa(count) }>
+		<div class="relative bg-base-300 rounded-box overflow-hidden mx-auto w-full max-w-[55vh] aspect-square">
+			<img data-frame-img class="absolute inset-0 h-full w-full object-contain" src={ "/dbg/" + id + "/f00000.png" } alt="frame"/>
+		</div>
+		<div class="flex items-center gap-2">
+			<button type="button" data-play class="btn btn-sm btn-primary w-20">play</button>
+			<button type="button" data-step="-1" class="btn btn-sm btn-ghost" title="previous frame">◀</button>
+			<input data-scrub type="range" min="0" max={ strconv.Itoa(maxFrame(count)) } value="0" class="range range-xs range-primary flex-1"/>
+			<button type="button" data-step="1" class="btn btn-sm btn-ghost" title="next frame">▶</button>
+			<span data-frame-label class="font-mono text-xs tabular-nums w-24 text-right">0:00 0/{ strconv.Itoa(maxFrame(count)) }</span>
+		</div>
+		<div class="flex items-center justify-between gap-2">
+			<a class="btn btn-xs btn-ghost" href={ "/video/" + id } download={ id + ".mp4" }>⬇ save mp4</a>
+			<a data-frame-dl class="btn btn-xs btn-ghost" href={ "/dbg/" + id + "/f00000.png" } download={ id + "-f0.png" }>⬇ frame png</a>
+		</div>
+		<div data-vars class="text-xs overflow-auto max-h-[30vh] shrink-0 rounded-box bg-base-300 p-2 font-mono leading-relaxed">loading vars…</div>
+		<script>
+		(() => {
+			const root = document.currentScript.closest("[data-player]");
+			const id = root.dataset.id;
+			const fps = parseInt(root.dataset.fps, 10) || 12;
+			const count = parseInt(root.dataset.count, 10) || 1;
+			const last = Math.max(0, count - 1);
+			const img = root.querySelector("[data-frame-img]");
+			const scrub = root.querySelector("[data-scrub]");
+			const label = root.querySelector("[data-frame-label]");
+			const playBtn = root.querySelector("[data-play]");
+			const frameDl = root.querySelector("[data-frame-dl]");
+			const varsEl = root.querySelector("[data-vars]");
+			let frames = null;
+			let cur = 0;
+			let timer = null;
 
-templ RenderCompleted(videoURL string) {
-	<div class="h-full w-full">
-		<video class="h-full w-full object-contain" src={ videoURL } autoplay loop muted playsinline controls></video>
+			const esc = (s) => String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+			const openEnts = new Set();
+			varsEl.addEventListener("toggle", (ev) => {
+				const d = ev.target;
+				if (d.tagName !== "DETAILS" || !d.dataset.ent) return;
+				d.open ? openEnts.add(d.dataset.ent) : openEnts.delete(d.dataset.ent);
+			}, true);
+
+			function entDetails(e) {
+				const rows = (e.fields || []).map(f =>
+					`<div class="pl-4"><span class="text-primary">${esc(f.name)}</span> <span class="opacity-60">=</span> ${esc(f.value)}</div>`
+				).join("");
+				const open = openEnts.has(e.name) ? " open" : "";
+				const dim = e.active ? "" : " opacity-50";
+				return `<details data-ent="${esc(e.name)}" class="mb-1${dim}"${open}><summary class="cursor-pointer select-none"><span class="text-secondary">${esc(e.type)}</span> <b>${esc(e.name)}</b> <span class="opacity-40">${(e.fields || []).length}f</span></summary>${rows}</details>`;
+			}
+
+			function renderVars(i) {
+				if (!frames) { varsEl.textContent = "(no debug data)"; return; }
+				const ents = frames[i] || [];
+				if (!ents.length) { varsEl.innerHTML = '<span class="opacity-50">no entities</span>'; return; }
+				const active = ents.filter(e => e.active);
+				const inactive = ents.filter(e => !e.active);
+				let html = active.length ? active.map(entDetails).join("") : '<span class="opacity-50">no active entities</span>';
+				if (inactive.length) {
+					html += `<details class="mt-2"><summary class="cursor-pointer select-none text-xs uppercase opacity-50">inactive (${inactive.length})</summary>${inactive.map(entDetails).join("")}</details>`;
+				}
+				varsEl.innerHTML = html;
+			}
+
+			const pngURL = (i) => "/dbg/" + id + "/f" + String(i).padStart(5, "0") + ".png";
+
+			function show(i) {
+				cur = Math.min(last, Math.max(0, i));
+				img.src = pngURL(cur);
+				scrub.value = cur;
+				const secs = Math.floor(cur / fps);
+				const mmss = Math.floor(secs / 60) + ":" + String(secs % 60).padStart(2, "0");
+				label.textContent = mmss + " " + cur + "/" + last;
+				frameDl.href = pngURL(cur);
+				frameDl.setAttribute("download", id + "-f" + cur + ".png");
+				renderVars(cur);
+			}
+
+			function stop() { if (timer) { clearInterval(timer); timer = null; } playBtn.textContent = "play"; }
+			function play() {
+				if (timer) { stop(); return; }
+				if (cur >= last) cur = -1;
+				playBtn.textContent = "pause";
+				timer = setInterval(() => {
+					if (cur >= last) { stop(); return; }
+					show(cur + 1);
+				}, 1000 / fps);
+			}
+
+			playBtn.addEventListener("click", play);
+			root.querySelectorAll("[data-step]").forEach(b =>
+				b.addEventListener("click", () => { stop(); show(cur + parseInt(b.dataset.step, 10)); }));
+			scrub.addEventListener("input", () => { stop(); show(parseInt(scrub.value, 10)); });
+
+			fetch("/dbg/" + id + "/vars.json").then(r => r.ok ? r.json() : null).then(d => {
+				frames = d && d.frames ? d.frames : null;
+				show(0);
+			}).catch(() => { frames = null; show(0); });
+		})();
+		</script>
 	</div>
 }
 
@@ -393,18 +573,6 @@ templ AdminPage(data adminPageData) {
 					</p>
 					@AdminNav(data.Secret, data.Active)
 				</header>
-				<div class="stats shadow bg-base-200">
-					<div class="stat">
-						<div class="stat-title">render server</div>
-						if data.Busy {
-							<div class="stat-value text-warning">busy</div>
-							<div class="stat-desc">new renders get a try-later error</div>
-						} else {
-							<div class="stat-value text-success">idle</div>
-							<div class="stat-desc">ready for one render</div>
-						}
-					</div>
-				</div>
 				<div>
 					<h2 class="text-xl font-semibold mb-3">Renders</h2>
 					<div class="overflow-x-auto rounded-box border border-base-content/10 bg-base-200">

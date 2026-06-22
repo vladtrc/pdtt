@@ -16,11 +16,11 @@ dot source:
 dot target:
   at: [2 * cos(theta), 2 * sin(theta)]
 
-| 4s | linear
+| 4s | ease:linear
 | theta -> math.tau
 | source.at -> target.at
 
-| 2s | linear
+| 2s | ease:linear
 | theta -> 1.5 * math.tau
 `)
 
@@ -57,7 +57,7 @@ path chord:
   stroke.color: color.gold
   stroke.width: 0.04
 
-| 2s | linear
+| 2s | ease:linear
 | theta -> math.pi / 2
 `)
 	chord := oneEntity(t, rt, "chord")

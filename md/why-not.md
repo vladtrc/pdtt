@@ -10,7 +10,7 @@ Terms people reach for, and where to go instead.
 - **`table`** — use `data name:` with a `for:` row source.
 - **`sibling` / `item` / `count` / `row`** — one binder, `it` (`.i`, `.n`, `.field`).
   Disambiguate nested `each` with `each … as name`.
-- **`morph` as a verb** — it's a modifier (a transition strategy), before the `->`.
+- **`morph` as a verb** — it's a modifier (a transition strategy), spelled `transition:morph` before the `->`.
 - **uppercase constants (`UL`, `RED`, …)** — namespaced globals: `corner.ul`, `color.red`.
 - **`tween x to y` / `during(a,b){…}`** — the `->` line with modifier cells is the only form.
 - **`extern updater` / `extern gen`** — only pure `extern fn` exists; per-frame logic is refused.

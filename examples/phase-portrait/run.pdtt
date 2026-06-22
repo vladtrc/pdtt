@@ -54,24 +54,19 @@ orbits[energies.indices as i]:
     fn: (2*energies[i] - x*x + (a/2)*x*x*x*x) > 0.001 ? -sqrt(2*energies[i] - x*x + (a/2)*x*x*x*x) : 99
     color: orbit_colors[i] @ 72%
 
-| 1.4s | smooth
-| grid{draw: 0} -> grid
-| ax{opacity: 0} -> ax
-| eq{opacity: 0} -> eq
-| a_lab{opacity: 0} -> a_lab
-| x_lab{opacity: 0} -> x_lab
-| v_lab{opacity: 0} -> v_lab
+| 1.4s | ease:smooth
+| in:draw | grid
+| in:fade | ax, eq, a_lab, x_lab, v_lab
 
-| 2.2s | stagger .05s | smooth
-| orbits[* as i].hi{draw: 0} -> orbits[i].hi
-| orbits[* as i].lo{draw: 0} -> orbits[i].lo
+| 2.2s | stagger .05s | ease:smooth
+| in:draw | orbits[* as i].hi, orbits[* as i].lo
 
-| 10s | linear
+| 10s | ease:linear
 | a -> 1
 
 | 1.8s
 
-| 1.2s | smooth
+| 1.2s | ease:smooth
 | frame -> home
 | grid.draw -> 0
 | ax.opacity -> 0

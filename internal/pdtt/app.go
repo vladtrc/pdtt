@@ -31,11 +31,31 @@ func NewSceneParser() *SceneParser {
 }
 
 func (p *SceneParser) ParsePath(path string) ([]Stmt, error) {
-	src, err := os.ReadFile(path)
+	paths := []string{path}
+	dir := filepath.Dir(path)
+	matches, err := filepath.Glob(filepath.Join(dir, "*.pdtt"))
 	if err != nil {
 		return nil, err
 	}
-	return ParseFile(string(src))
+	for _, p := range matches {
+		if filepath.Clean(p) != filepath.Clean(path) {
+			paths = append(paths, p)
+		}
+	}
+
+	var out []Stmt
+	for _, p := range paths {
+		src, err := os.ReadFile(p)
+		if err != nil {
+			return nil, err
+		}
+		stmts, err := ParseFile(string(src))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", p, err)
+		}
+		out = append(out, stmts...)
+	}
+	return out, nil
 }
 
 type SceneCompiler struct{}
@@ -48,11 +68,17 @@ func (c *SceneCompiler) CompileStmts(stmts []Stmt) (*Runtime, error) {
 	return Compile(stmts)
 }
 
-type FrameRenderer struct{}
+type FrameRenderer struct {
+	OnFrame func(k int, rt *Runtime)
+}
 
 func NewFrameRenderer() *FrameRenderer {
 	return &FrameRenderer{}
 }
+
+// FrameRenderer renders a runtime to frames. OnFrame, when set, is called after
+// each frame's Step with the runtime state, so callers can capture per-frame
+// debug snapshots without paying for them on a normal render.
 
 // FrameCount returns how many frames a runtime renders at the given fps.
 func FrameCount(rt *Runtime, fps float64) int {
@@ -140,6 +166,10 @@ func (r *FrameRenderer) Render(rt *Runtime, cfg Config, trace *Tracer, sink Fram
 			return nil, fmt.Errorf("t=%.2fs: %w", t, err)
 		}
 		stepDur := time.Since(stepStart)
+
+		if r.OnFrame != nil {
+			r.OnFrame(k, rt)
+		}
 
 		renderStart := time.Now()
 		dc := renderer.Frame(rt)

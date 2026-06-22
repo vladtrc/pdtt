@@ -124,11 +124,14 @@ func TestHandleRenderReturnsVideoFragment(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `<video`) {
-		t.Fatalf("body should include video tag: %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `data-player`) {
+		t.Fatalf("body should include the frame player: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `/dbg/`) {
+		t.Fatalf("body should include frame URLs: %s", rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `/video/`) {
-		t.Fatalf("body should include video URL: %s", rec.Body.String())
+		t.Fatalf("body should include save-mp4 URL: %s", rec.Body.String())
 	}
 }
 
@@ -154,7 +157,7 @@ func TestHandleGenerateReturnsSceneWithoutAutoRender(t *testing.T) {
 	if !strings.Contains(body, "scene generated") {
 		t.Fatalf("body should include generated scene: %s", body)
 	}
-	if !strings.Contains(body, `scene-input`) {
+	if !strings.Contains(body, `pdttSetScene`) {
 		t.Fatalf("body should update editor: %s", body)
 	}
 	if strings.Contains(body, `requestSubmit`) {
@@ -178,38 +181,6 @@ func TestHandleGenerateErrors(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "model failed") {
 		t.Fatalf("body should include error: %s", rec.Body.String())
-	}
-}
-
-func TestHandlePublicRenderStatusShowsReadyAndBusy(t *testing.T) {
-	srv := testRenderServer(t, 1024)
-
-	req := httptest.NewRequest(http.MethodGet, "/render-status", nil)
-	rec := httptest.NewRecorder()
-	srv.handlePublicRenderStatus(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("ready status code = %d, want 200", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "server is ready") {
-		t.Fatalf("ready body should explain server is ready: %s", rec.Body.String())
-	}
-
-	srv.renderMu.Lock()
-	defer srv.renderMu.Unlock()
-	srv.setRenderStatus("encoding video", "Encoding frames to MP4")
-	rec = httptest.NewRecorder()
-	srv.handlePublicRenderStatus(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("busy status code = %d, want 200", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "server is busy") {
-		t.Fatalf("busy body should explain server is busy: %s", rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "encoding video") {
-		t.Fatalf("busy body should include current stage: %s", rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "0:00") {
-		t.Fatalf("busy body should include elapsed render time: %s", rec.Body.String())
 	}
 }
 
@@ -245,30 +216,28 @@ func TestHandleRenderTimeoutReturns422(t *testing.T) {
 		t.Fatalf("body should include timeout: %s", rec.Body.String())
 	}
 
-	secondReq, secondRec := postRender(t, "scene=second")
-	srv.handleRender(secondRec, secondReq)
-	if secondRec.Code != http.StatusConflict {
-		t.Fatalf("busy status while timed-out render cleans up = %d, want 409", secondRec.Code)
-	}
-
+	// Drain the orphaned render goroutine so its workdir cleanup runs.
 	<-renderFinished
-	deadline := time.Now().Add(100 * time.Millisecond)
-	for time.Now().Before(deadline) && srv.isBusy() {
-		time.Sleep(time.Millisecond)
-	}
-	if srv.isBusy() {
-		t.Fatal("server stayed busy after timed-out render finished")
-	}
 }
 
-func TestHandleRenderBusyReturns409(t *testing.T) {
+// Renders run concurrently: a second render started while a first is in flight
+// must succeed rather than be rejected with 409.
+func TestHandleRenderConcurrent(t *testing.T) {
 	srv := testRenderServer(t, 1024)
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var once sync.Once
 	srv.renderScene = func(scene, workDir string) (*render.Result, error) {
-		once.Do(func() { close(started) })
-		<-release
+		// Only the first render blocks; later renders return immediately so the
+		// second request can complete while the first is still in flight.
+		first := false
+		once.Do(func() {
+			first = true
+			close(started)
+		})
+		if first {
+			<-release
+		}
 		framesDir := filepath.Join(workDir, "frames")
 		if err := os.MkdirAll(framesDir, 0o755); err != nil {
 			return nil, err
@@ -286,8 +255,8 @@ func TestHandleRenderBusyReturns409(t *testing.T) {
 
 	secondReq, secondRec := postRender(t, "scene=second")
 	srv.handleRender(secondRec, secondReq)
-	if secondRec.Code != http.StatusConflict {
-		t.Fatalf("busy status = %d, want 409", secondRec.Code)
+	if secondRec.Code != http.StatusOK {
+		t.Fatalf("concurrent render status = %d, want 200: %s", secondRec.Code, secondRec.Body.String())
 	}
 
 	close(release)

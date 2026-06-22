@@ -1,6 +1,6 @@
 # PDTT full LLM reference
 
-Write valid PDTT source only. Do not add Markdown fences or explanations.
+Return one complete PDTT scene wrapped in a single ```pdtt code fence and nothing else. The fence is required: indentation and spaces are significant in PDTT, and the fence preserves them. Do not add explanations before or after the fence.
 
 PDTT is a small scene language for rendered math/geometry animation. A file declares
 state first, then schedules animation with `|` time blocks. Declarations create values
@@ -26,8 +26,8 @@ text label:
   scale: 0.6
   color: color.white
 
-| 1.0s | smooth
-| label{opacity: 0} -> label
+| 1.0s | ease:smooth
+| in:fade | title, subtitle
 
 | 1.5s
 ```
@@ -79,10 +79,10 @@ Use `snapshot` when freezing a record's fields:
 ```pdtt
 home: snapshot frame
 
-| 1.0s | smooth
+| 1.0s | ease:smooth
 | frame.w -> 9
 
-| 1.0s | smooth
+| 1.0s | ease:smooth
 | frame -> home
 ```
 
@@ -232,7 +232,7 @@ The `draw` field (default 1) reveals text left to right, one line after another 
 the text analogue of drawing a path on. Use the same self-transition as any shape:
 
 ```pdtt
-| 1.5s | intro{draw: 0} -> intro      # write the text on, glyph by glyph
+| 1.5s | in:draw | intro  # write the text on, glyph by glyph
 ```
 
 Any substring is independently tweenable through `<text>.sub("phrase").<attr>`.
@@ -261,21 +261,21 @@ text line:
 ```
 
 For a one-shot highlight that **lights up, then settles back to rest**, use a
-transient modifier cell instead — a bare channel keyword and a target span, no
-arrow and no number. The channel runs through a `0 → peak → 0` envelope over the
-window and is left at its resting value:
+`highlight:` modifier cell instead — a channel and a target span, no arrow and no
+number. The channel runs through a `0 → peak → 0` envelope over the window and is
+left at its resting value:
 
 | modifier | effect over the window |
 |---|---|
-| `flash` | flash the span to yellow, then back to its colour |
-| `strike` | sweep a strikethrough in, then out |
-| `underline` | sweep an underline in, then out |
-| `enlarge` | swell the span to ~1.5×, then back |
-| `wiggle` | a self-contained shake that settles |
+| `highlight:flash` | flash the span to yellow, then back to its colour |
+| `highlight:strike` | sweep a strikethrough in, then out |
+| `highlight:underline` | sweep an underline in, then out |
+| `highlight:enlarge` | swell the span to ~1.5×, then back |
+| `highlight:wiggle` | a self-contained shake that settles |
 
 ```pdtt
-| 1.0s | smooth | flash  | line.sub("emphasise")
-| 1.0s | smooth | wiggle | line.sub("emphasise")
+| 1.0s | ease:smooth | highlight:flash | line.sub("emphasise")
+| 1.0s | ease:smooth | highlight:wiggle | line.sub("emphasise")
 ```
 
 See `examples/text-features` for both forms — modifiers and arrows — side by side.
@@ -288,7 +288,7 @@ The first `|` line of a block is the clock. Rows in the same block run in parall
 against that clock unless a window or stagger changes them.
 
 ```pdtt
-| 4s | linear
+| 4s | ease:linear
 | theta -> math.tau
 | 0-.5 | dot.opacity -> 1
 ```
@@ -296,7 +296,7 @@ against that clock unless a window or stagger changes them.
 The header may also carry its first edit inline:
 
 ```pdtt
-| 1s | smooth | dot{opacity: 0, scale: 0.2} -> dot
+| 1s | ease:smooth | in:pop | dot
 ```
 
 A standalone clock with no rows is a pause:
@@ -321,35 +321,37 @@ left side toward the right side. After the row, the left side is assigned to the
 side. If the right side is dynamic, it keeps tracking.
 
 ```pdtt
-| 1.5s | smooth
+| 1.5s | ease:smooth
 | p.at -> [3, 1]
 | label.at -> above(p, 0.25)
 ```
 
-Entry tween:
+Entrance:
 
 ```pdtt
-| 0.8s | smooth
-| p{opacity: 0, scale: 0.2} -> p
-| curve{draw: 0} -> curve
+| 0.8s | ease:smooth
+| in:pop | p
+| in:draw | curve, axis
 ```
 
-`obj{field: start, ...} -> obj` activates `obj` and tweens the listed fields from
-phantom start values back to the declared field values.
+`in:PRESET | obj` activates `obj`, snaps the preset's hidden fields, and tweens them
+back to the declared values. Presets: `draw`, `fade`, `pop`, `draw_fade`. `ou:PRESET | obj`
+reverses it and leaves `obj` inactive. For `in:`, `ou:`, and `highlight:`, the subject cell
+may list multiple top-level subjects separated by commas: `| in:fade | title, capL, capR`.
 
 Record tween:
 
 ```pdtt
 home: snapshot frame
 
-| 1s | smooth
+| 1s | ease:smooth
 | frame -> home
 ```
 
 Morph:
 
 ```pdtt
-| 1s | morph | square_a -> dot_b
+| 1s | transition:morph | square_a -> dot_b
 ```
 
 Morph activates the target and deactivates the source at the end.
@@ -361,25 +363,27 @@ last.
 
 | Modifier | Meaning |
 |---|---|
-| `linear`, `smooth`, `ease_in`, `ease_out`, `ease_out_cubic`, `ease_in_out` | easing |
+| `ease:linear`, `ease:smooth`, `ease:in`, `ease:out`, `ease:out_cubic`, `ease:in_out` | easing |
 | `0-.5`, `.5-`, `25%-75%`, `0.2s-1.1s` | window |
 | `0.6s` | window from `0` to `0.6s` |
 | `after 0.5s`, `lag 0.2s`, `stagger 0.08s` | offsets |
-| `morph`, `fade_in`, `draw`, `write` | transition strategy |
+| `transition:morph`, `transition:fade_in`, `transition:draw`, `transition:write` | transition strategy for a `->` edit |
+| `in:PRESET`, `ou:PRESET` | entrance / exit of the subject (`draw`, `fade`, `pop`, `draw_fade`) |
+| `highlight:CHANNEL` | transient emphasis of the subject span (`flash`, `strike`, `underline`, `enlarge`, `wiggle`) |
 | `by name`, `by pos` | pairing for structural transitions |
 
 Examples:
 
 ```pdtt
-| 1.2s | smooth
-| grid{draw: 0} -> grid
-| axes{opacity: 0} -> axes
+| 1.2s | ease:smooth
+| in:draw | grid
+| in:fade | axes, title
 
-| 2s | smooth | stagger 0.08s
-| dots[* as i]{opacity: 0, scale: 0.2} -> dots[i]
+| 2s | ease:smooth | stagger 0.08s
+| in:pop | dots[* as i]
 ```
 
-Do not write `| 4s linear`; the canonical form is `| 4s | linear`.
+Do not write `| 4s linear`; the canonical form is `| 4s | ease:linear`.
 
 ## Collections, Broadcast, And Families
 
@@ -405,8 +409,8 @@ the count.
 Broadcast `[*]` expands one row per element:
 
 ```pdtt
-| 1.2s | stagger 0.12s | smooth
-| p[* as i]{opacity: 0, scale: 0.2} -> p[i]
+| 1.2s | stagger 0.12s | ease:smooth
+| in:pop | p[* as i]
 ```
 
 Use `[* as i]` when the RHS needs the same index. Plain `[*]` also binds canonical
@@ -447,15 +451,15 @@ change.
 Broadcast family members like this:
 
 ```pdtt
-| 1.2s | smooth | stagger 0.08s
-| roots[* as i].mark{opacity: 0, scale: 0.2} -> roots[i].mark
-| roots[* as i].hit{draw: 0} -> roots[i].hit
+| 1.2s | ease:smooth | stagger 0.08s
+| in:pop | roots[* as i].mark
+| in:draw | roots[* as i].hit
 ```
 
 If many objects derive from a list, animate the list and let live fields follow:
 
 ```pdtt
-| 4s | smooth
+| 4s | ease:smooth
 | val[* as i] -> [-2, 1, 3][i]
 ```
 
@@ -564,26 +568,26 @@ dot p:
   radius: 0.12
   color: color.red
 
-| 1.0s | smooth
-| grid{draw: 0} -> grid
-| ax{opacity: 0} -> ax
+| 1.0s | ease:smooth
+| in:draw | grid
+| in:fade | ax
 
-| 0.7s | smooth
-| title{opacity: 0} -> title
+| 0.7s | ease:smooth
+| in:fade | title
 
 | 2.0s
 
-| 0.45s | smooth
+| 0.45s | ease:smooth
 | title.opacity -> 0
 
-| 0.7s | smooth
-| formula{opacity: 0} -> formula
-| curve{draw: 0} -> curve
-| p{opacity: 0, scale: 0.2} -> p
+| 0.7s | ease:smooth
+| in:fade | formula
+| in:draw | curve
+| in:pop | p
 
 | 1.4s
 
-| 4.0s | smooth
+| 4.0s | ease:smooth
 | t -> 3
 
 | 1.5s
@@ -593,14 +597,14 @@ dot p:
 
 Do not generate these:
 
-- Markdown fences or explanatory prose around the code
+- explanatory prose, comments, or extra text outside the single ```pdtt fence (the outer fence itself is required)
 - `bind`, `track`, updater callbacks, `during {}`
 - `tween x to y`, `animate(...)`, `wait(...)`
 - camera classes; use the built-in `frame` record
 - uppercase constants like `RED`, `BLUE`, `UL`, `RIGHT`
 - plural type names like `dots p:` or `axeses`
-- `morph` as a verb; use `| ... | morph | a -> b`
-- `gone`; tween `opacity` or `draw` to `0`
+- `morph` as a verb; use `| ... | transition:morph | a -> b`
+- `gone`; use `ou:fade | obj` to dismiss an object
 - `for: from "cmd"` and `fast_after`; this prototype rejects them
 - LaTeX-only commands in `typst` records
 - `text("...") name:` and `typst("...") name:` constructor syntax; use a `text:` field

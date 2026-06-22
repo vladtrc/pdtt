@@ -88,16 +88,16 @@ a *true* outline morph possible (text→text and text→shape) instead of the cr
     opacity: 0
 
   | 1s
-  | a.opacity -> 1     # or | write | a -> a  if write modifier exists; keep it simple
+  | a.opacity -> 1  # or | transition:write | a -> a  if write modifier exists; keep it simple
 
   | 1s
-  | morph | a -> b
+  | transition:morph | a -> b
 
   | 1s
-  | morph | b -> c
+  | transition:morph | b -> c
   ```
   (Adjust to whatever the parser actually supports — check `md/syntax.md` and the other
-  examples. The point: text→text→shape via `| morph |`.)
+  examples. The point: text→text→shape via `| transition:morph |`.)
 - `ref.py`: manim mirror using **LaTeX**: `MathTex("A")` → `Transform` to `MathTex("B")` →
   `Transform` to `Circle()`/`Dot()`. Guard like the other refs (manim/latex may be absent).
 

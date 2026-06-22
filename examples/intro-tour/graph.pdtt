@@ -1,0 +1,48 @@
+scene graph:
+
+freq: 1
+
+axes g_ax:
+  at: [2.75, -0.35]
+  size: [4.4, 3.0]
+  x_range: [-3.14, 3.14, 1.57]
+  y_range: [-1.4, 1.4, 1]
+
+plot g_sin:
+  axes: g_ax
+  fn: sin(freq * x)
+  color: color.yellow
+
+dot g_dot:
+  at: g_ax.point(3.14, sin(freq * 3.14))
+  radius: 0.08
+  color: color.pink
+
+# ── 4. Графики ──
+| 0.9s | ease:smooth
+| -.5 | head.opacity -> 0
+| -.5 | c3.opacity -> 0
+| .5-.54 | head.text -> "4. Графики"
+| .55- | head.opacity -> 1
+| .5- | in:fade | c4
+
+| 1.1s | ease:smooth
+| in:fade | g_ax
+
+| 1.0s | ease:smooth
+| in:draw | g_sin
+| in:pop | g_dot
+
+# крутим частоту — кривая и точка едут живьём
+| 3.0s | ease:smooth
+| freq -> 4
+
+| 1.4s
+
+# ── Финал ──
+| 0.8s | ease:smooth
+| g_sin.opacity -> 0
+| g_dot.opacity -> 0
+| g_ax.opacity -> 0
+| c4.opacity -> 0
+| divider.draw -> 0

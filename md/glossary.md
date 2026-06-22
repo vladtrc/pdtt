@@ -16,27 +16,29 @@ freezes it. `home = frame` snapshots the camera there.
 
 **clock** — the first cell of a block header: `4s`, a fraction (`0.3` / `30%`), or `each …`.
 
-**row / edit** — a `| ... | path -> expr` or `| ... | obj{...} -> obj` line. The edit is the last cell.
+**row / edit** — a `| ... | path -> expr` line (edit last cell) or a `| ... | VERB | subject`
+line where `VERB` is `in:`/`ou:`/`highlight:` and the subject is the last cell.
 
 **tween (`->`)** — interpolate `path` toward `expr` over the window, then `path` *is* `expr`.
 
-**entry** — a same-object tween. `obj{field: start, ...} -> obj` creates a phantom
-copy of `obj` with the listed field overrides, activates `obj`, then tweens those fields back
-to the declared object. It is the special case of morphing an object into itself, so it needs
-no `morph` modifier or structural pairing.
+**entrance / exit** — `in:PRESET | obj` activates `obj`, snaps the preset's hidden fields, then
+tweens them back to the declared values; `ou:PRESET | obj` tweens them to hidden and leaves `obj`
+inactive. Presets: `draw`, `fade`, `pop`, `draw_fade`. It is the special case of morphing an
+object into itself, so it needs no `transition:` modifier or structural pairing.
 
 **presence** — records are declared inactive: they exist for references and layout, but render
-nothing until an entry or `morph` activates them. `opacity` stays a visual field, not the
+nothing until an `in:` entrance or `morph` activates them. `opacity` stays a visual field, not the
 presence flag.
 
-**modifier** — any cell before the `->` on a line: a window, ease, transition, offset, or
-pairing. Modifiers shape the tween; they are not operations.
+**modifier** — any cell that is not the last edit/subject cell: a window, ease, transition,
+offset, or pairing, each spelled `key:value` where applicable. Modifiers shape the tween; they
+are not operations.
 
 **window** — the `(from, to)` interval a tween runs over, as a fraction of the block clock.
 Default is the whole block. Spelled `a-b` (either side optional).
 
-**transition** — *how* a tween renders: `morph`, `fade_in`, `draw`, `write`. A modifier,
-not a verb. Default is direct value interpolation.
+**transition** — *how* a `->` tween renders, spelled `transition:NAME`: `morph`, `fade_in`,
+`draw`, `write`. A modifier, not a verb. Default is direct value interpolation.
 
 **it** — the current element in a per-element context (broadcast `[*]`, `each`). Carries
 `.i` (index), `.n` (count), and fields via dot access. Multiple `[*]` give `it.0`, `it.1`, …;
@@ -51,6 +53,12 @@ indices also read as `i j k l`. All access is dot notation — never brackets on
 
 **extern fn** — a pure host function usable at eval time. The only hole in the language;
 it cannot emit score or run per frame.
+
+**scene block** — `scene name:` names a reusable list of state/time forms. Sibling `.pdtt`
+files in the same directory are visible when compiling a file path.
+
+**run** — `run name` splices a scene block at the current timeline position. The block shares
+records, globals, and the frame with the caller.
 
 **frame** — the builtin camera record. Fields `at`, `w`, `h`, `angle`. Tween or snapshot
 it like any record; there is no separate camera construct.
