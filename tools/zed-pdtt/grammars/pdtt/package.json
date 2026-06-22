@@ -1,0 +1,16 @@
+{
+  "name": "tree-sitter-pdtt",
+  "version": "0.0.1",
+  "description": "Tree-sitter grammar for PDTT",
+  "main": "grammar.js",
+  "license": "MIT",
+  "tree-sitter": [
+    {
+      "scope": "source.pdtt",
+      "file-types": ["pdtt"]
+    }
+  ],
+  "devDependencies": {
+    "tree-sitter-cli": "^0.22.6"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "grammars": [
+    {
+      "name": "pdtt",
+      "scope": "source.pdtt",
+      "file-types": ["pdtt"]
+    }
+  ],
+  "metadata": {
+    "version": "0.0.1",
+    "license": "MIT",
+    "description": "Tree-sitter grammar for PDTT",
+    "authors": [
+      {
+        "name": "pdtt contributors"
+      }
+    ]
+  },
+  "bindings": {
+    "c": false,
+    "go": false,
+    "java": false,
+    "node": false,
+    "python": false,
+    "rust": false,
+    "swift": false,
+    "zig": false
+  }
+}

@@ -1,0 +1,25 @@
+id = "pdtt"
+name = "PDTT"
+version = "0.0.1"
+schema_version = 1
+authors = ["pdtt contributors"]
+description = "PDTT language support for Zed"
+repository = "https://example.invalid/pdtt"
+themes = []
+icon_themes = []
+languages = ["languages/pdtt"]
+capabilities = []
+
+[lib]
+
+[grammars.pdtt]
+repository = "file:///home/u/p/pdtt/tools/zed-pdtt/grammars/pdtt"
+rev = "main"
+
+[language_servers]
+
+[context_servers]
+
+[agent_servers]
+
+[slash_commands]
