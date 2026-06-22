@@ -8,3 +8,6 @@ examples/*/res*/
 examples/*/ref/
 __pycache__/
 humantxt/
+
+# Zed clones grammars here at build time
+tools/zed-pdtt/grammars/
